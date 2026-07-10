@@ -87,6 +87,24 @@ def _is_conv(url: str) -> bool:
     return url.split("?")[0].endswith("/f/conversation")
 
 
+def _apply_overrides(body, forced_model, forced_effort, effort_support):
+    """Mutate a parsed `f/conversation` request body in place: force the model
+    and/or inject the root `thinking_effort` field. The effort is only injected
+    when the *effective* model advertises `configurable_thinking_effort` and the
+    value is in its allowed set (so it's a safe no-op on accounts/models that
+    don't support it). Returns True iff the body was changed."""
+    changed = False
+    if forced_model:
+        body["model"] = forced_model
+        changed = True
+    if forced_effort:
+        allowed = effort_support.get(body.get("model"))
+        if allowed and forced_effort in allowed:
+            body["thinking_effort"] = forced_effort
+            changed = True
+    return changed
+
+
 _MODELS_JS = """async () => {
   const s = await (await fetch('/api/auth/session')).json();
   const t = s.accessToken;
@@ -129,10 +147,12 @@ def run_login(timeout_s: int = 600) -> bool:
 
 
 class Job:
-    def __init__(self, message: str, model: str | None, new_conversation: bool):
+    def __init__(self, message: str, model: str | None, new_conversation: bool,
+                 effort: str | None = None):
         self.message = message
         self.model = model
         self.new_conversation = new_conversation
+        self.effort = effort
         self.out: queue.Queue = queue.Queue()
 
 
@@ -147,6 +167,8 @@ class BrowserSession:
         self._client = None
         self._active: dict | None = None
         self._forced_model: str | None = None
+        self._forced_effort: str | None = None
+        self._effort_support: dict[str, set[str]] = {}
         self._closing = False
         self._thread = threading.Thread(target=self._run, name="cgp-browser", daemon=True)
 
@@ -222,6 +244,10 @@ class BrowserSession:
         if not self._authed():
             raise RuntimeError(
                 "Not logged in. Run `chatgpt-proxy login` once (needs a display).")
+        self._effort_support = self._load_effort_support()
+        if self._effort_support:
+            log.info("thinking_effort configurable models: %s",
+                     {k: sorted(v) for k, v in self._effort_support.items()})
         self.ready = True
         log.info("session ready (authenticated)")
 
@@ -231,6 +257,32 @@ class BrowserSession:
             return bool(r.ok and r.json().get("accessToken"))
         except Exception:
             return False
+
+    def _load_effort_support(self) -> dict[str, set[str]]:
+        """slug -> set of allowed thinking_effort values, for models that
+        advertise `configurable_thinking_effort`. Empty when unsupported."""
+        try:
+            data = self._page.evaluate(_MODELS_JS)
+        except Exception:
+            return {}
+        out: dict[str, set[str]] = {}
+        if not isinstance(data, dict):
+            return out
+        for m in data.get("models") or []:
+            if not (isinstance(m, dict) and m.get("configurable_thinking_effort")):
+                continue
+            vals: set[str] = set()
+            for e in (m.get("thinking_efforts") or []):
+                if isinstance(e, str):
+                    vals.add(e)
+                elif isinstance(e, dict):
+                    v = (e.get("thinking_effort") or e.get("effort")
+                         or e.get("id") or e.get("value"))
+                    if isinstance(v, str):
+                        vals.add(v)
+            if vals and m.get("slug"):
+                out[m["slug"]] = vals
+        return out
 
     def _shutdown_browser(self):
         self.ready = False
@@ -260,10 +312,11 @@ class BrowserSession:
         args = {"requestId": fid}
         try:
             post = (p.get("request") or {}).get("postData")
-            if post and self._forced_model:
+            if post and (self._forced_model or self._forced_effort):
                 b = json.loads(post)
-                b["model"] = self._forced_model
-                args["postData"] = base64.b64encode(json.dumps(b).encode()).decode()
+                if _apply_overrides(b, self._forced_model, self._forced_effort,
+                                    self._effort_support):
+                    args["postData"] = base64.b64encode(json.dumps(b).encode()).decode()
         except Exception:
             pass
         try:
@@ -328,8 +381,9 @@ class BrowserSession:
         self._tasks.put(("models", reply))
         return reply.get(timeout=30)
 
-    def submit(self, message: str, model: str | None, new_conversation: bool) -> queue.Queue:
-        job = Job(message, model, new_conversation)
+    def submit(self, message: str, model: str | None, new_conversation: bool,
+               effort: str | None = None) -> queue.Queue:
+        job = Job(message, model, new_conversation, effort)
         self._tasks.put(("send", job))
         return job.out
 
@@ -347,6 +401,7 @@ class BrowserSession:
     def _do_send(self, job: Job):
         page = self._page
         self._forced_model = job.model or None
+        self._forced_effort = job.effort or None
 
         if job.new_conversation:
             page.goto(config.CHATGPT_URL + "/", wait_until="domcontentloaded", timeout=60000)

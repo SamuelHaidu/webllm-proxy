@@ -48,6 +48,30 @@ def _norm_model(model):
     return model.strip()
 
 
+# OpenAI `reasoning_effort` (minimal/low/medium/high, plus 5.1's `none`) maps
+# onto ChatGPT web's 4-level `thinking_effort` ladder (min/standard/extended/max).
+# Raw web values are accepted too, so a client can target them directly.
+_EFFORT_MAP = {
+    "minimal": "min", "min": "min", "none": "min",
+    "low": "standard", "standard": "standard",
+    "medium": "extended", "extended": "extended",
+    "high": "max", "max": "max",
+}
+
+
+def _norm_effort(body):
+    """Extract reasoning_effort (Chat Completions) or reasoning.effort
+    (Responses-style) from a request body and map it to a web thinking_effort,
+    or None. The browser layer still gates on model support."""
+    v = body.get("reasoning_effort")
+    if not v:
+        r = body.get("reasoning")
+        v = r.get("effort") if isinstance(r, dict) else None
+    if not v:
+        return None
+    return _EFFORT_MAP.get(str(v).strip().lower())
+
+
 def create_app(session: BrowserSession) -> Flask:
     app = Flask(__name__)
     CORS(app)
@@ -130,6 +154,7 @@ def create_app(session: BrowserSession) -> Flask:
         messages = body.get("messages") or []
         stream = bool(body.get("stream"))
         req_model = _norm_model(body.get("model"))
+        effort = _norm_effort(body)
 
         tools = body.get("tools") or []
         raw_choice = body.get("tool_choice")
@@ -149,8 +174,8 @@ def create_app(session: BrowserSession) -> Flask:
 
         roles = [m.get("role") for m in messages]
         sys_len = sum(len(_msg_text(m)) for m in messages if m.get("role") == "system")
-        log.info("chat: msgs=%d roles=%s system_chars=%d tools=%d choice=%s new_conv=%s -> forwarding %d chars",
-                 len(messages), roles, sys_len, len(tools), choice, new_conv, len(text))
+        log.info("chat: msgs=%d roles=%s system_chars=%d tools=%d choice=%s effort=%s new_conv=%s -> forwarding %d chars",
+                 len(messages), roles, sys_len, len(tools), choice, effort, new_conv, len(text))
         if config.DEBUG_DUMP:
             try:
                 import pathlib
@@ -166,7 +191,7 @@ def create_app(session: BrowserSession) -> Flask:
 
         lock.acquire()
         try:
-            out_q = session.submit(text, req_model, new_conv)
+            out_q = session.submit(text, req_model, new_conv, effort)
         except Exception as e:
             lock.release()
             return jsonify({"error": {"message": str(e)}}), 500

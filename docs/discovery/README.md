@@ -10,6 +10,13 @@ findings; older entries may be superseded (note if so).
 
 ## Entries
 
+- `2026-07-10-thinking-effort.md` — **Reasoning effort.** `/backend-api/models`
+  advertises per-model `configurable_thinking_effort` + `thinking_efforts`, and
+  the `f/conversation` body carries a root `thinking_effort` on a 4-level ladder
+  `min<standard<extended<max`. Mapped 1:1 from OpenAI `reasoning_effort`
+  (minimal/low/medium/high) and injected into the request (gated to models that
+  support it, so it's a no-op on accounts that don't). Also noted:
+  `versions[].intelligence_presets`.
 - `2026-07-10-tool-calling.md` — **Tool calling, both kinds.** (1) ChatGPT's
   **native tools** (web search): routing is by `author.role`+`recipient`+
   `channel` (not content_type), and the answer is polluted with private-use-area

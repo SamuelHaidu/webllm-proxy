@@ -115,6 +115,11 @@ pi -p --provider chatgpt --model gpt-5-mini "How many .py files are in src/? Use
   is serialized), so parallel tool calls are discouraged.
 - **Native web search** works and its citation markup is stripped/converted to
   markdown links; `cite` footnote links are dropped.
+- **Reasoning effort**: OpenAI `reasoning_effort` (`minimal|low|medium|high`, or
+  `reasoning.effort`) maps to ChatGPT web's `thinking_effort` ladder
+  (`min|standard|extended|max`) and is injected into the request — but only for
+  models whose `/backend-api/models` entry has `configurable_thinking_effort`
+  (a no-op on accounts/models that don't advertise it).
 - **Real slugs only**: `/v1/models` returns what ChatGPT exposes; no aliasing.
 - **Serialized**: one turn at a time (single browser). `usage` counts are zero.
 - Automates the ChatGPT web app — likely against OpenAI ToS beyond personal use.

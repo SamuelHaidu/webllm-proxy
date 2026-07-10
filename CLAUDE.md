@@ -42,6 +42,17 @@ DOM.
   native-tool messages are gated out by `recipient != "all"`. Validated with a
   direct client and the `pi` agent. **Next: resolve `cite`→URL inline; maybe
   expose ChatGPT's search as an OpenAI `web_search` tool.**
+- **Reasoning effort DONE (2026-07-10)** — see
+  `docs/discovery/2026-07-10-thinking-effort.md`. `/backend-api/models` carries
+  per-model `configurable_thinking_effort` + `thinking_efforts`; the
+  `f/conversation` body has a **root `thinking_effort`** on a 4-level ladder
+  `min<standard<extended<max`. OpenAI `reasoning_effort`
+  (`minimal|low|medium|high`, or `reasoning.effort`) maps 1:1 → injected into the
+  request via `_apply_overrides` in the `Fetch.requestPaused` handler, **gated**
+  to models advertising support (boot caches `_effort_support` from the models
+  list). Safe no-op on the dev account (nothing configurable there). Not yet
+  verified against a supporting (enterprise) login. Also seen:
+  `versions[].intelligence_presets` in the models list (unused so far).
 - **Note (env):** the user's shell sets `UV_ENV_FILE=.env`, so `uv run` needs
   a `.env` in the repo (an empty gitignored one exists).
 - **Browser layer = CloakBrowser** (headless passes Cloudflare Turnstile on
