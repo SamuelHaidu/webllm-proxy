@@ -117,7 +117,12 @@ def create_app(session: BrowserSession) -> Flask:
         last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=None)
         tail = messages[last_user:] if last_user is not None else messages
         body = _format_turns(tail, name_map)
-        text = (preamble + "\n\n" + body).strip() if preamble else body
+        if preamble:
+            text = (preamble + "\n\n# USER REQUEST\n"
+                    "(Everything above is the system prompt; the user's actual "
+                    "request begins here.)\n\n" + body).strip()
+        else:
+            text = body
         return (text or None), True
 
     def chunk(cid, created, model, delta, finish=None):

@@ -134,3 +134,52 @@ Restarting the server with a CPU-spinning `while …; do :; done` wait wedged th
 harness (killed the relaunch). To restart: SIGTERM the server and wait on the
 PID without busy-looping (e.g. `tail --pid=<pid> -f /dev/null`) before launching
 the next one, so the new browser doesn't collide with the old profile lock.
+
+## Update — thinking models, the native sandbox, and a parser fix
+
+Real-world test: `pi` building a small recursive-descent calculator
+(`calc.py` + `test_calc.py`) through the proxy, using the thinking model
+`gpt-5-4-t-mini`. What we learned:
+
+1. **Unclosed `tool_call` fence (parser bug, fixed).** The thinking model emitted
+   a valid opening ```` ```tool_call ```` + JSON and then **stopped without the
+   closing ```` ``` ```` — literally honoring our "then stop" instruction. Old
+   `_FENCE` required a closing fence, so `parse_tool_calls` missed it and returned
+   the block as *content*; `pi` printed it and exited (0 files built). **Fix:**
+   `parse_tool_calls` now salvages an unclosed fence via `_OPENFENCE` +
+   `_first_json_object` (brace-balanced JSON extraction, ignoring braces in
+   strings). After the fix the call parsed and `pi` continued statefully
+   (`msgs=4`, roles `system,user,assistant,tool`).
+
+2. **Native code-interpreter sandbox (the core blocker).** `gpt-5-4-t-mini` has
+   ChatGPT's own python/`web.run`-style tools. Instead of (or on top of) our
+   contract it **executes in ChatGPT's sandbox and/or hallucinates results.** A
+   direct "use the bash tool to list files" returned a listing of ChatGPT's own
+   container root — `/`, `.dockerenv`, `caas_toolbox`, `openai`. In the `pi`
+   build it ran our `bash` once (real, empty cwd), then falsely asserted "both
+   files already present in the root filesystem" and "`python /test_calc.py`
+   passes", and finished **without ever calling `write`.** Nothing was built.
+
+3. **Mitigations added (this session).** The contract now states the model has
+   **no** private sandbox / code interpreter / python and that the listed tools
+   are the ONLY way to act — on the user's *real* machine — plus "if you output
+   results that didn't come from a `Result from tool` message you are
+   hallucinating." It must **always close the fence**. The preamble is now framed
+   as an explicit `# SYSTEM INSTRUCTIONS` block that opens with an
+   **available-tools roster** ("exactly these N tools and no others: …"),
+   delimited from a `# USER REQUEST`. These **reduced but did not eliminate** the
+   thinking model's sandbox hallucination.
+
+4. **Non-thinking `gpt-5-mini`.** On a direct simple request it emits a clean
+   `write` tool_call under the new contract (`finish_reason:"tool_calls"`,
+   verified). On the full `pi` build (pi's own large system prompt + a two-file
+   task) it stalled with clarifying/meta prose in 2/2 runs and built nothing — a
+   task/prompt-interaction issue, not a parser bug.
+
+**Conclusion:** emulated tool calling is reliable for a single, simple tool step
+but **not yet reliable for multi-step autonomous builds** with these web models;
+the thinking model's native sandbox is the main obstacle. **Most promising real
+fix (not yet done):** disable ChatGPT's native tools at the source by setting the
+right field(s) in the `f/conversation` request body — we already rewrite that
+body via CDP `Fetch` (see `_apply_overrides`). Candidates to probe:
+`system_hints`, `conversation_mode`, or an explicit tools/`disabled_tools` field.
