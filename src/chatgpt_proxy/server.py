@@ -19,6 +19,7 @@ from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 
 from . import config
+from . import tools as tools_mod
 from .browser import BrowserSession
 
 log = logging.getLogger(__name__)
@@ -50,25 +51,50 @@ def _norm_model(model):
 def create_app(session: BrowserSession) -> Flask:
     app = Flask(__name__)
     CORS(app)
-    lock = threading.Lock()          # serialize turns (single browser)
-    state = {"sent_user_turns": []}  # user turns already sent to the live convo
+    lock = threading.Lock()   # serialize turns (single browser)
+    state = {"sigs": []}      # signature of the messages[] already accounted for
 
-    def plan_send(messages):
+    def _sig(m):
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            return ("a_tc", json.dumps(m.get("tool_calls"), sort_keys=True, default=str))
+        if role == "tool":
+            return ("tool", m.get("tool_call_id"), _msg_text(m))
+        return (role, _msg_text(m))
+
+    def _format_turns(msgs, name_map):
+        """Render the user/tool messages of a slice as text for ChatGPT
+        (assistant/system messages are ChatGPT's own output or go in the
+        preamble, so they are not echoed back)."""
+        out = []
+        for m in msgs:
+            role = m.get("role")
+            if role == "user":
+                out.append(_msg_text(m))
+            elif role == "tool":
+                out.append(tools_mod.format_tool_result(m, name_map))
+        return "\n\n".join(t for t in out if t).strip()
+
+    def plan_turn(messages, tools, tool_choice, forced_name):
         """Map stateless messages[] onto the stateful ChatGPT conversation.
+        Continuation = the prior signature is a prefix of this one (send only
+        what's new); otherwise start a fresh ChatGPT conversation.
         Returns (text_to_send, new_conversation)."""
-        system = "\n\n".join(_msg_text(m) for m in messages if m.get("role") == "system").strip()
-        user_turns = [_msg_text(m) for m in messages if m.get("role") == "user"]
-        if not user_turns:
-            return None, False
-        sent = state["sent_user_turns"]
-        is_cont = (len(user_turns) > len(sent) and sent and user_turns[:len(sent)] == sent)
-        if is_cont:
-            new_turns = user_turns[len(sent):]
-            state["sent_user_turns"] = user_turns
-            return "\n\n".join(new_turns), False
-        state["sent_user_turns"] = user_turns
-        last = user_turns[-1]
-        return (f"{system}\n\n{last}" if system else last), True
+        sigs = [_sig(m) for m in messages]
+        prev = state["sigs"]
+        cont = bool(prev) and len(sigs) > len(prev) and sigs[:len(prev)] == prev
+        state["sigs"] = sigs
+        name_map = tools_mod.tool_name_map(messages)
+        if cont:
+            return _format_turns(messages[len(prev):], name_map) or None, False
+        # new conversation: preamble (system + tool contract) + the newest turn(s)
+        system_text = "\n\n".join(_msg_text(m) for m in messages if m.get("role") == "system")
+        preamble = tools_mod.build_preamble(system_text, tools, tool_choice, forced_name)
+        last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=None)
+        tail = messages[last_user:] if last_user is not None else messages
+        body = _format_turns(tail, name_map)
+        text = (preamble + "\n\n" + body).strip() if preamble else body
+        return (text or None), True
 
     def chunk(cid, created, model, delta, finish=None):
         return "data: " + json.dumps({
@@ -105,14 +131,26 @@ def create_app(session: BrowserSession) -> Flask:
         stream = bool(body.get("stream"))
         req_model = _norm_model(body.get("model"))
 
-        text, new_conv = plan_send(messages)
+        tools = body.get("tools") or []
+        raw_choice = body.get("tool_choice")
+        forced_name = None
+        if isinstance(raw_choice, dict):
+            forced_name = (raw_choice.get("function") or {}).get("name")
+            choice = "required"
+        elif isinstance(raw_choice, str):
+            choice = raw_choice
+        else:
+            choice = "auto" if tools else "none"
+        tools_active = bool(tools) and choice != "none"
+
+        text, new_conv = plan_turn(messages, tools if tools_active else None, choice, forced_name)
         if not text:
             return jsonify({"error": {"message": "no user message provided"}}), 400
 
         roles = [m.get("role") for m in messages]
         sys_len = sum(len(_msg_text(m)) for m in messages if m.get("role") == "system")
-        log.info("chat: msgs=%d roles=%s system_chars=%d tools=%d new_conv=%s -> forwarding %d chars",
-                 len(messages), roles, sys_len, len(body.get("tools") or []), new_conv, len(text))
+        log.info("chat: msgs=%d roles=%s system_chars=%d tools=%d choice=%s new_conv=%s -> forwarding %d chars",
+                 len(messages), roles, sys_len, len(tools), choice, new_conv, len(text))
         if config.DEBUG_DUMP:
             try:
                 import pathlib
@@ -132,6 +170,75 @@ def create_app(session: BrowserSession) -> Flask:
         except Exception as e:
             lock.release()
             return jsonify({"error": {"message": str(e)}}), 500
+
+        if tools_active:
+            # Tool calls can't be recognized until the reply is complete, so
+            # buffer the whole turn, then emit either tool_calls or content.
+            content, reasoning, finish, err = "", "", "stop", None
+            try:
+                while True:
+                    ev = out_q.get()
+                    if ev is None:
+                        break
+                    kind, val = ev
+                    if kind == "content":
+                        content += val
+                    elif kind == "reasoning":
+                        reasoning += val
+                    elif kind == "done":
+                        finish = val or "stop"
+                    elif kind == "error":
+                        err = val
+            finally:
+                lock.release()
+            if err and not content:
+                return jsonify({"error": {"message": err, "type": "upstream_error"}}), 502
+            calls, leftover = tools_mod.parse_tool_calls(content)
+            resp_model_out = session.model_slug_last or resp_model
+            if calls:
+                if stream:
+                    def gen_tc():
+                        yield chunk(cid, created, resp_model, {"role": "assistant"})
+                        d = {"tool_calls": [{
+                            "index": i, "id": c["id"], "type": "function",
+                            "function": c["function"],
+                        } for i, c in enumerate(calls)]}
+                        if leftover:
+                            d["content"] = leftover
+                        yield chunk(cid, created, resp_model, d)
+                        yield chunk(cid, created, resp_model, {}, finish="tool_calls")
+                        yield "data: [DONE]\n\n"
+                    return Response(gen_tc(), mimetype="text/event-stream",
+                                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                return jsonify({
+                    "id": cid, "object": "chat.completion", "created": created,
+                    "model": resp_model_out,
+                    "choices": [{"index": 0, "finish_reason": "tool_calls",
+                                 "message": {"role": "assistant",
+                                             "content": leftover or None, "tool_calls": calls}}],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                })
+            # no tool call -> ordinary answer (delivered buffered)
+            if stream:
+                def gen_txt():
+                    yield chunk(cid, created, resp_model, {"role": "assistant"})
+                    if reasoning:
+                        yield chunk(cid, created, resp_model, {"reasoning_content": reasoning})
+                    if content:
+                        yield chunk(cid, created, resp_model, {"content": content})
+                    yield chunk(cid, created, resp_model, {}, finish=finish)
+                    yield "data: [DONE]\n\n"
+                return Response(gen_txt(), mimetype="text/event-stream",
+                                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+            msg = {"role": "assistant", "content": content}
+            if reasoning:
+                msg["reasoning_content"] = reasoning
+            return jsonify({
+                "id": cid, "object": "chat.completion", "created": created,
+                "model": resp_model_out,
+                "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            })
 
         if stream:
             def gen():
