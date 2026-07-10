@@ -107,12 +107,16 @@ pi -p --provider chatgpt --model gpt-5-mini "How many .py files are in src/? Use
   conversation and forwards only what's new each call (a diverging history
   starts a fresh conversation). The system prompt + tool contract are injected
   on the first turn.
-- **Function calling is emulated**: ChatGPT web has no client-facing
-  function-calling API, so `tools` are injected as a prompt contract and the
-  model's `tool_call` block is parsed back into OpenAI `tool_calls`
-  (`finish_reason:"tool_calls"`). Tool-enabled requests are buffered (not
-  token-streamed). The contract asks for **one tool call per reply** (the proxy
-  is serialized), so parallel tool calls are discouraged.
+- **Function calling is emulated** two ways: (1) a prompt contract asks the
+  model to emit a `tool_call` block that is parsed back into OpenAI `tool_calls`;
+  and (2) the proxy also intercepts calls the model makes through ChatGPT's own
+  **native tool channel** (an SSE message whose `recipient` is the tool name,
+  with JSON args in the body) and converts those to `tool_calls` too — this is
+  more reliable than the text contract. Either way: `finish_reason:"tool_calls"`,
+  requests are buffered (not token-streamed), one call per reply (the proxy is
+  serialized). Reliability is model-dependent: `gpt-5-mini` drives tools well;
+  some models fabricate results instead of calling tools (see
+  `docs/discovery/2026-07-10-tool-calling.md`).
 - **Native web search** works and its citation markup is stripped/converted to
   markdown links; `cite` footnote links are dropped.
 - **Reasoning effort**: OpenAI `reasoning_effort` (`minimal|low|medium|high`, or

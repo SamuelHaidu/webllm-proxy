@@ -205,6 +205,7 @@ def create_app(session: BrowserSession) -> Flask:
             # Tool calls can't be recognized until the reply is complete, so
             # buffer the whole turn, then emit either tool_calls or content.
             content, reasoning, finish, err = "", "", "stop", None
+            native = []
             try:
                 while True:
                     ev = out_q.get()
@@ -219,11 +220,19 @@ def create_app(session: BrowserSession) -> Flask:
                         finish = val or "stop"
                     elif kind == "error":
                         err = val
+                    elif kind == "tool_call":
+                        native.append(val)
             finally:
                 lock.release()
-            if err and not content:
+            if err and not content and not native:
                 return jsonify({"error": {"message": err, "type": "upstream_error"}}), 502
-            calls, leftover = tools_mod.parse_tool_calls(content)
+            # Prefer tool calls the model made through ChatGPT's native channel
+            # (recipient == tool name); fall back to the text `tool_call` contract.
+            # Take the first native call only, to keep execution serialized.
+            calls = tools_mod.native_to_openai(native, tools_mod.tool_names(tools))[:1]
+            leftover = ""
+            if not calls:
+                calls, leftover = tools_mod.parse_tool_calls(content)
             resp_model_out = session.model_slug_last or resp_model
             if calls:
                 if stream:

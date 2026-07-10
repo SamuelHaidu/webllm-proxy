@@ -271,6 +271,48 @@ def _salvage_call_json(s):
     return None
 
 
+def tool_names(tools):
+    """Set of function names the client declared."""
+    out = set()
+    for t in (tools or []):
+        n = _fn(t).get("name")
+        if n:
+            out.add(n)
+    return out
+
+
+def native_to_openai(native, allowed_names=None):
+    """Convert native-channel tool-call captures (from the SSE: each a dict
+    {"name": recipient, "arguments": raw-JSON-text}) into OpenAI tool_calls,
+    keeping only calls whose name is a client-declared tool (so ChatGPT's own
+    native tools like `web`/`python` are ignored).
+
+    Two recipient shapes are handled: when the recipient IS a client tool, the
+    text is that tool's arguments; when it isn't (e.g. the model routed to a
+    recipient it named `tool_call`/`functions`), the text may itself be a
+    contract-shaped `{name, arguments}` call, which we normalize and re-filter.
+    JSON is parsed leniently (salvage) to tolerate a slightly-truncated stream."""
+    simple = []  # [{"name", "arguments"(dict)}]
+    for nc in (native or []):
+        name = nc.get("name")
+        raw = nc.get("arguments") or ""
+        if name and (allowed_names is None or name in allowed_names):
+            args = _load(raw)
+            if not isinstance(args, dict):
+                salv = _salvage_call_json(raw)
+                args = salv if isinstance(salv, dict) else {}
+            simple.append({"name": name, "arguments": args})
+        else:
+            j = _load(raw)
+            if not _is_call(j):
+                j = _salvage_call_json(raw)
+            for c in _normalize(j):
+                cn = c.get("name")
+                if cn and (allowed_names is None or cn in allowed_names):
+                    simple.append(c)
+    return _to_openai(simple)
+
+
 def parse_tool_calls(text):
     """Extract tool calls from model output.
     Returns (openai_tool_calls, leftover_text)."""

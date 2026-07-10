@@ -48,6 +48,13 @@ class V1DeltaParser:
         self.cur_role = None
         self.cur_recipient = None
         self._pua_buf = ""
+        # Native-channel tool calls: when the model invokes a tool through
+        # ChatGPT's own recipient mechanism (recipient == the tool name, content
+        # type "code"), the arguments stream as JSON in content.text. We capture
+        # them here as [{"name": recipient, "text": raw-json-args}, ...]; the
+        # server converts client-tool ones to OpenAI tool_calls.
+        self.native_calls = []
+        self._cur_native_id = None
         self.content = ""
         self.reasoning = ""
         self.finish_reason = None
@@ -143,9 +150,15 @@ class V1DeltaParser:
         # only the assistant's own messages are output; skip the user echo etc.
         if self.cur_role not in (None, "assistant"):
             return []
-        # skip tool-routed messages (search query -> recipient "web", etc.);
-        # only the user-visible answer has recipient "all".
+        # A non-"all" recipient means the model routed this message to a tool via
+        # ChatGPT's native channel (search -> "web", or a client tool -> its
+        # name). The tool-call arguments (JSON) stream as this message's text —
+        # sometimes as content_type "code" (in content.text), sometimes "text"
+        # (in parts) — so capture it regardless of content_type. The server keeps
+        # only calls whose recipient is a client-declared tool, so ChatGPT's own
+        # native tools (web/python) are captured harmlessly and then filtered.
         if self.cur_recipient not in (None, "all"):
+            self._native_append(text)
             return []
         if self.cur_content_type in _REASONING_TYPES:
             self.reasoning += text
@@ -155,6 +168,14 @@ class V1DeltaParser:
             return []
         self.content += cleaned
         return [("content", cleaned)]
+
+    def _native_append(self, text):
+        """Accumulate streamed argument text for the current native tool call,
+        starting a new one whenever the message id changes."""
+        if self._cur_native_id != self.message_id or not self.native_calls:
+            self._cur_native_id = self.message_id
+            self.native_calls.append({"name": self.cur_recipient, "text": ""})
+        self.native_calls[-1]["text"] += text
 
     def _declutter(self, text):
         """Strip ChatGPT web citation/link markers (PUA-delimited) from content,
@@ -188,16 +209,20 @@ class V1DeltaParser:
         return ""  # cite / genui / video / other: drop
 
     def finalize(self):
-        """Emit any held plain text at stream end (drop a dangling marker)."""
-        if not self._pua_buf:
-            return []
-        leftover, self._pua_buf = self._pua_buf, ""
-        s = leftover.find(_PUA_START)
-        txt = leftover if s == -1 else leftover[:s]
-        if txt:
-            self.content += txt
-            return [("content", txt)]
-        return []
+        """At stream end: flush any held plain text (dropping a dangling marker)
+        and surface captured native-channel tool calls as ("tool_call", ...)."""
+        out = []
+        if self._pua_buf:
+            leftover, self._pua_buf = self._pua_buf, ""
+            s = leftover.find(_PUA_START)
+            txt = leftover if s == -1 else leftover[:s]
+            if txt:
+                self.content += txt
+                out.append(("content", txt))
+        for nc in self.native_calls:
+            if nc["text"].strip():
+                out.append(("tool_call", {"name": nc["name"], "arguments": nc["text"]}))
+        return out
 
 
 class StreamAccumulator:

@@ -231,3 +231,49 @@ Intercept those: map a native tool-call attempt (recipient == a declared tool,
 args in `content`) straight to OpenAI `tool_calls`. Needs a capture of the SSE at
 the moment of an `InvalidRecipient` attempt to confirm the args are present in
 the stream before the backend rejects them.
+
+## Update 3 — native-channel interception WORKS (the real fix)
+
+Captured the SSE during native tool calls (added an env-gated raw dump,
+`CHATGPT_PROXY_DUMP_SSE=<file>`, in `browser.py::_feed`). Result: when a model
+calls a client tool natively, the **arguments stream as complete, valid JSON**
+in the message body — and (this run) with **no `InvalidRecipient`** at all:
+
+```
+recipient="write"  ->  {"path": "calc.py", "content": "import sys\n..."}
+recipient="write"  ->  {"path": "test_calc.py", "content": "from calc import ..."}
+recipient="bash"   ->  {"command": "python test_calc.py"}
+```
+
+Shape details that mattered:
+- The message is `author.role:"assistant"`, `recipient:"<toolname>"`. Its args
+  arrive **either** as `content_type:"code"` (in `content.text`) **or**
+  `content_type:"text"` (in `content.parts`) — non-deterministic — so we capture
+  the text **regardless of content_type**.
+- Sometimes the model routes to a recipient it literally names `tool_call`
+  (confusing our fence tag), wrapping a contract-shaped `{name, arguments}`
+  object as the body. Handle that by normalizing the wrapped call.
+- ChatGPT's own native tools (`web`, `python`) also use non-`all` recipients, so
+  we keep only calls whose recipient is a **client-declared** tool name.
+
+Implementation:
+- `sse.py`: `_emit` sends any non-`all` recipient text to `_native_append`,
+  accumulating per message id into `parser.native_calls`; `finalize` surfaces
+  each as a `("tool_call", {name, arguments})` event.
+- `tools.py::native_to_openai(native, allowed_names)`: filters to client tools,
+  parses args (lenient salvage), and also unwraps a `tool_call`-recipient
+  contract object. `tool_names(tools)` gives the allow-set.
+- `server.py`: the buffered tools branch collects `tool_call` events and
+  **prefers** the native call (first one, to stay serialized) over the text
+  fence.
+
+**Validation (curl, fast):** `gpt-5-mini` on the calc task returned a real
+`write` tool_call on **5 of 6** attempts (native `write`/`bash` → OpenAI
+`tool_calls`); the one miss was a browser composer-click timeout, not the model.
+
+**Model matters — and newer isn't better here.** `gpt-5-5-mini` (`reasoning_type
+none`, `enabled_tools:[tools,tools2,search,canvas,image_gen]`) did **not** call
+tools at all: every message was `recipient:"all"` and it **hallucinated**
+"Implemented calc.py and test_calc.py ... Result: ALL TESTS PASSED" against an
+empty dir. So `gpt-5-mini` + native interception is the working combo; the newer
+mini fabricates completion instead of calling tools.

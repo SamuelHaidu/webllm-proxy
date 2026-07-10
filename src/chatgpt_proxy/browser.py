@@ -83,6 +83,9 @@ def kill_profile_chrome(profile: str) -> int:
     return len(pids)
 
 
+_DUMP_SSE = os.environ.get("CHATGPT_PROXY_DUMP_SSE")
+
+
 def _is_conv(url: str) -> bool:
     return url.split("?")[0].endswith("/f/conversation")
 
@@ -357,6 +360,12 @@ class BrowserSession:
             self._finish(a, done_already=True)
 
     def _feed(self, a, text):
+        if _DUMP_SSE:
+            try:
+                with open(_DUMP_SSE, "a") as f:
+                    f.write(text)
+            except Exception:
+                pass
         for ev in a["acc"].feed(text):
             if ev[0] == "done":
                 self._finish(a)

@@ -40,8 +40,22 @@ DOM.
   Also: **native web search** works and its private-use-area citation markers
   (`…`) are stripped/rendered as markdown (`sse.py::_declutter`);
   native-tool messages are gated out by `recipient != "all"`. Validated with a
-  direct client and the `pi` agent. **Next: resolve `cite`→URL inline; maybe
-  expose ChatGPT's search as an OpenAI `web_search` tool.**
+  direct client and the `pi` agent.
+- **Native-channel tool-call interception DONE (2026-07-10, best path)** — see
+  `docs/discovery/2026-07-10-tool-calling.md` (Update 3). The models often ignore
+  the text contract and call tools through **ChatGPT's own native channel**: an
+  SSE `assistant` message with `recipient` = the tool name and the **args as
+  valid JSON** in the body (`content.text` for `content_type:"code"`, or `parts`
+  for `"text"` — non-deterministic; sometimes recipient is literally
+  `tool_call`). `sse.py` now captures any non-`all` recipient text
+  (`native_calls` → `("tool_call", …)` events); `tools.py::native_to_openai`
+  filters to client-declared tools and converts to OpenAI `tool_calls`;
+  `server.py` prefers the native call over the text fence. Validated by curl:
+  `gpt-5-mini` → real `write`/`bash` tool_calls 5/6. **Model-dependent:**
+  `gpt-5-5-mini` fabricates "ALL TESTS PASSED" without calling tools; the thinking
+  model runs in ChatGPT's sandbox. Debug: `CHATGPT_PROXY_DUMP_SSE=<file>` dumps
+  raw SSE. **Next: still flaky end-to-end for multi-step builds; consider the
+  request-body native-tool disable, and a per-model tool-reliability note.**
 - **Reasoning effort DONE (2026-07-10)** — see
   `docs/discovery/2026-07-10-thinking-effort.md`. `/backend-api/models` carries
   per-model `configurable_thinking_effort` + `thinking_efforts`; the
