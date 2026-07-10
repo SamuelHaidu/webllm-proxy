@@ -10,6 +10,10 @@ profile_config.txt
 .venv/
 .env
 
+# Raw network captures (contain auth tokens / cookies — never commit)
+*.har
+docs/databricks_har/
+
 # Python
 __pycache__/
 *.py[cod]

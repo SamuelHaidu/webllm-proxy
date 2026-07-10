@@ -10,6 +10,16 @@ findings; older entries may be superseded (note if so).
 
 ## Entries
 
+- `2026-07-10-databricks-llmproxy.md` — **NEW TARGET: Databricks Genie/assistant
+  `llmproxy`** (separate from ChatGPT). Pre-browser HAR analysis via
+  `scripts/har_explore.py`. The Genie-code channel `POST
+  /ajax-api/2.0/conversation/llmproxy/` is a thin passthrough to the **native
+  Anthropic Messages API on AWS Bedrock** (Claude Sonnet 4.5, native `tool_use`,
+  extended `thinking`), model chosen by `_llmproxy_fields.model_registration`.
+  A sibling `proxy/chat/completions` is Azure-OpenAI-shaped. **Auth = session
+  cookie + `x-csrf-token` (served by `/auth/session/info`) + org-id; NO
+  Turnstile/PoW** — so a mostly server-side proxy is feasible and tool-calling
+  is native (no emulation). Lists the open questions for the browser phase.
 - `2026-07-10-thinking-effort.md` — **Reasoning effort.** `/backend-api/models`
   advertises per-model `configurable_thinking_effort` + `thinking_efforts`, and
   the `f/conversation` body carries a root `thinking_effort` on a 4-level ladder
