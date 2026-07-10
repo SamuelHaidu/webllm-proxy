@@ -10,6 +10,15 @@ findings; older entries may be superseded (note if so).
 
 ## Entries
 
+- `2026-07-10-tool-calling.md` — **Tool calling, both kinds.** (1) ChatGPT's
+  **native tools** (web search): routing is by `author.role`+`recipient`+
+  `channel` (not content_type), and the answer is polluted with private-use-area
+  citation markers (`…`) that we strip / render as markdown links.
+  (2) **OpenAI-style function calling**, which the web backend can't do natively,
+  is **emulated** via a `tool_call` prompt contract + parser; stateful planner
+  generalized to signature-diffing so `role:"tool"` results feed back. Validated
+  with a direct client and the `pi` agent; contract mandates one call per reply
+  (fixes a parallel read-before-write race).
 - `2026-07-10-refactor-packaging.md` — Consolidated into a lean full-Python
   `uv` package (`src/chatgpt_proxy/`, dist `chatgpt-web-proxy`); removed the
   Go port, old DOM-scraping scripts, and the frontend; moved the login profile

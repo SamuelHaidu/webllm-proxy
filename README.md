@@ -6,9 +6,10 @@ through a stealth browser. For people who have a ChatGPT login but no OpenAI
 API key/budget (e.g. locked-down enterprise environments) and want to point
 OpenAI-compatible tools — coding agents, scripts — at it.
 
-**Status:** working minimal proxy — SSE streaming, model selection, thinking
-models, and stateful conversations. Tool/function calling is not implemented
-yet (next milestone).
+**Status:** working proxy — SSE streaming, model selection, thinking models,
+stateful conversations, **OpenAI-style function/tool calling** (emulated), and
+**native ChatGPT web search** (its citation markup is cleaned into markdown
+links).
 
 ## How it works
 
@@ -86,10 +87,9 @@ Add a custom provider in `~/.pi/agent/models.json`:
 ```
 
 ```bash
-pi -p --no-tools --provider chatgpt --model gpt-5-mini "Write a Python add(a,b)."
+# tools work: pi drives its own read/bash/edit/write through the proxy
+pi -p --provider chatgpt --model gpt-5-mini "How many .py files are in src/? Use a tool to check."
 ```
-
-Use `--no-tools` until tool calling lands (the proxy drops `tools` for now).
 
 ## Configuration (env)
 
@@ -104,9 +104,17 @@ Use `--no-tools` until tool calling lands (the proxy drops `tools` for now).
 ## Design & known limitations
 
 - **Stateful**: maps stateless OpenAI `messages[]` onto one ongoing ChatGPT
-  conversation and sends only the newest user message. The system prompt is
-  folded into the first turn and **dropped on follow-ups**; `tools` are dropped
-  (both change with the tool-calling milestone).
+  conversation and forwards only what's new each call (a diverging history
+  starts a fresh conversation). The system prompt + tool contract are injected
+  on the first turn.
+- **Function calling is emulated**: ChatGPT web has no client-facing
+  function-calling API, so `tools` are injected as a prompt contract and the
+  model's `tool_call` block is parsed back into OpenAI `tool_calls`
+  (`finish_reason:"tool_calls"`). Tool-enabled requests are buffered (not
+  token-streamed). The contract asks for **one tool call per reply** (the proxy
+  is serialized), so parallel tool calls are discouraged.
+- **Native web search** works and its citation markup is stripped/converted to
+  markdown links; `cite` footnote links are dropped.
 - **Real slugs only**: `/v1/models` returns what ChatGPT exposes; no aliasing.
 - **Serialized**: one turn at a time (single browser). `usage` counts are zero.
 - Automates the ChatGPT web app — likely against OpenAI ToS beyond personal use.
@@ -117,8 +125,9 @@ Use `--no-tools` until tool calling lands (the proxy drops `tools` for now).
 src/chatgpt_proxy/
   __main__.py   CLI: serve | login | install
   browser.py    CloakBrowser session (CDP capture, model override, lifecycle)
-  sse.py        ChatGPT v1 delta-encoding parser -> content/reasoning
+  sse.py        ChatGPT v1 delta-encoding parser -> content/reasoning (+citation cleanup)
   server.py     Flask app: OpenAI schema + stateful conversation mapping
+  tools.py      emulated OpenAI function calling (contract + parser)
   config.py     env-driven config
 docs/discovery/ how the ChatGPT web API was reverse-engineered (findings)
 ```

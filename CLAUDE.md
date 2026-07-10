@@ -28,7 +28,20 @@ DOM.
   Mechanism: type prompt in the browser → capture the `f/conversation` SSE via
   CDP `Network.streamResourceContent` (a `window.fetch` hook does NOT work) →
   parse `v1` deltas → OpenAI chunks; model override via CDP `Fetch`.
-  **Next milestone: tool/function calling.**
+- **Tool/function calling DONE (2026-07-10)** — see
+  `docs/discovery/2026-07-10-tool-calling.md`. ChatGPT web has no client-facing
+  function-calling API, so it's **emulated** (`tools.py`): inject a `tool_call`
+  prompt contract, parse the model's block back into OpenAI `tool_calls`
+  (`finish_reason:"tool_calls"`), feed `role:"tool"` results back as the next
+  turn. `plan_turn` now signature-diffs the whole `messages[]` (not just user
+  turns) so tool flows continue on one ChatGPT conversation. Contract mandates
+  **one tool call per reply** (proxy is serialized; fixes a parallel
+  read-before-write race). Tool-enabled requests are buffered, not streamed.
+  Also: **native web search** works and its private-use-area citation markers
+  (`…`) are stripped/rendered as markdown (`sse.py::_declutter`);
+  native-tool messages are gated out by `recipient != "all"`. Validated with a
+  direct client and the `pi` agent. **Next: resolve `cite`→URL inline; maybe
+  expose ChatGPT's search as an OpenAI `web_search` tool.**
 - **Note (env):** the user's shell sets `UV_ENV_FILE=.env`, so `uv run` needs
   a `.env` in the repo (an empty gitignored one exists).
 - **Browser layer = CloakBrowser** (headless passes Cloudflare Turnstile on
