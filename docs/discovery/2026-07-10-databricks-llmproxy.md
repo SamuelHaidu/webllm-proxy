@@ -191,3 +191,72 @@ just *session cookie + CSRF token + org-id*, all obtainable once per session.
 5. Rate limits / quotas (headers were clean here; watch under load).
 6. CSRF-token lifetime and whether `/auth/session/refresh` alone keeps
    `llmproxy` authorized over time.
+
+## Update 1 (2026-07-10) — live browser validation + model enumeration
+
+Probed a real logged-in session (headed login once → `~/.local/share/
+databricks-proxy/profile`, then **headless reuse works** — `/auth/session/info`
+returns userId with no re-login). All requests were issued **in-page** via
+`page.evaluate` (`fetch(..., {credentials:'include'})`), so the httpOnly session
+cookie auto-attaches and the CSRF token never leaves the browser. This is the
+browser-backed pattern from the ChatGPT proxy, minus the composer typing —
+here a plain in-page `fetch` replay works because there is no token-minting.
+
+**Answers to the open questions:**
+
+1. **Auth confirmed.** In-page `fetch` with `x-csrf-token` (from
+   `/auth/session/info`) + `x-databricks-org-id` (the URL `?o=` value) + the
+   session cookie is sufficient. No cookie extraction needed; keep the
+   browser-backed model. `/auth/session/info` also gives `{accountId, sessionId,
+   csrfToken, userId}`.
+2. **Minimal body works.** A tiny `system` (`[{type:text,text:"test"}]`), **no
+   tools**, `max_tokens:8` → `200`, real `claude-sonnet-4-5-20250929`. The 37 KB
+   Genie system prompt and 30 built-in tools are **not required** — we can send
+   our own.
+3. **Client tools work.** Sending our own single `{type:"custom", name:"ping",
+   input_schema:...}` tool → `200`, `stop_reason:"tool_use"`, a
+   `content_block` `tool_use` named `ping`. Native tool calling with
+   client-declared tools — **no emulation** (unlike ChatGPT).
+4. `proxy/chat/completions` also routes through LLM Proxy and **requires a
+   registered `clientId`** in `metadata.clientId` (an unregistered value →
+   `400 BAD_REQUEST: clientId 'x' is not registered`). With `auto-rename-action`
+   it returns `200` (the Azure body stringified under `completion`).
+
+**Model registry (this account), by trial + error-message taxonomy:**
+
+The proxy distinguishes three cases, which lets us map the registry without a
+list endpoint:
+- `200` → usable.
+- `PERMISSION_DENIED: Model X is unavailable for clientId <cid>. Failed check:
+  MEC. Error Code: MODEL_DISABLED` → **registered but entitlement-gated** for
+  that client (the name is real).
+- `NOT_FOUND: Model 'X' is not registered ... does not match any
+  model_registration name or alias` → the name doesn't exist.
+
+| Backend | Model registration | State |
+|---|---|---|
+| Bedrock/Anthropic (`llmproxy`, `endpoint: anthropic/v1/messages`) | **`claude-4-5-sonnet`** (alias `claude-sonnet-4-5`) → `claude-sonnet-4-5-20250929` | **ENABLED** ✅ |
+| " | `claude-4-5-opus` (alias `claude-opus-4-5`), `claude-4-5-haiku`, `claude-4-sonnet`, `claude-3-7-sonnet`, `claude-4-1-opus`, `gemini-2-5-pro`, `llama-3-3-70b`, `llama-3-1-405b` | registered but **MODEL_DISABLED** for this client |
+| Azure OpenAI (`proxy/chat/completions`) | **`gpt-41-mini-2025-04-14`**, **`gpt-41-2025-04-14`** | **ENABLED** ✅ |
+| " | `gpt-4o`, `gpt-4o-mini`, `gpt-5`, `o3-mini`, ... | NOT_FOUND (not registered) |
+
+So on this login the usable set is **Claude Sonnet 4.5** (rich: native tools +
+interleaved thinking, via `llmproxy`) plus two **GPT-4.1** Azure deployments
+(via `proxy/chat/completions`). Model **aliases** exist (`claude-sonnet-4-5` ==
+`claude-4-5-sonnet`).
+
+**Loophole noted (not pursued):** entitlement (`MEC`) is checked **per
+`clientId`**. The two app clientIds seen (`editor-assistant-agent-mode`,
+`auto-rename-action`) both deny the gated models, but other Databricks feature
+clientIds (Genie spaces, dashboards, SQL assistant, ...) may carry different
+entitlements — a possible way to reach the disabled Claude/Gemini/Llama models.
+This edges into entitlement circumvention; leaving it as an observation pending
+a decision.
+
+**Build implications:** target `llmproxy` with `model_registration:
+claude-4-5-sonnet`, a minimal `system`, and the client's own `tools`; expose it
+to `pi` as an `anthropic-messages` provider (pi speaks Anthropic natively — no
+OpenAI↔Anthropic conversion). Keep a headless browser-backed session (login
+once), issue the `llmproxy` fetch in-page, and stream the native Anthropic SSE
+straight through. Also expose the two GPT-4.1 deployments via the
+`chat/completions` path if an OpenAI-shaped option is wanted.
