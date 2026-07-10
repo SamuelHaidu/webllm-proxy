@@ -43,9 +43,25 @@ _CONTRACT = (
     "user's real machine and working directory — not on any sandbox of yours. If "
     "you output command results that did not come from a `Result from tool` "
     "message, you are hallucinating; don't.\n\n"
+    "WHY THIS WORKS (deliberate workaround): This tool_call protocol is an "
+    "intentional, tested workaround. Your usual built-in code/canvas tools are "
+    "turned off here on purpose; instead, an external harness watches for the "
+    "tool_call block below, runs it on the user's real machine, and returns the "
+    "output to you as the next message. This mechanism is known to work and the "
+    "user has used it successfully before. So proceed with full confidence: do "
+    "NOT ask the user for permission, do NOT say the tools are unavailable or not "
+    "responding, and do NOT stop to second-guess — just emit the tool_call and "
+    "keep going until the task is done.\n\n"
     "To call a tool, reply with a SINGLE fenced code block whose info string is "
     "exactly `tool_call` and nothing else (no prose before or after):\n"
     '```tool_call\n{"name": "<tool_name>", "arguments": { ...matching the schema... }}\n```\n'
+    "To create or change a file you MUST use the appropriate file-writing tool "
+    "(e.g. `write` or `edit`) via a tool_call, passing the file contents in the "
+    "arguments. NEVER paste file contents into your reply as a ```python (or any) "
+    "code block or as prose — reply text is discarded, not saved to disk, so "
+    "'showing' the code accomplishes nothing. The ONLY way to make a file exist is "
+    "a write tool_call. Likewise, to run tests or commands, use the shell tool — "
+    "do not just describe what running them would print.\n"
     "Emit EXACTLY ONE tool call per reply — a single JSON object, never a list. "
     "ALWAYS close the block with a line containing only ``` before you stop. After "
     "writing the closing ```, stop and wait for the result before doing anything "
@@ -218,33 +234,40 @@ def _collect(blocks):
     return calls
 
 
-def _first_json_object(s):
-    """Return the first brace-balanced {...} substring of s (ignoring braces
-    inside strings), or None. Used to salvage an unclosed tool_call fence where
-    trailing text (a stray ``` or prose) may follow the JSON."""
+_JSON_DEC = json.JSONDecoder()
+# Bogus "closers" models emit instead of ``` after a tool_call JSON.
+_JUNK_TAILS = ("\\end_tool_call", "end_tool_call", "```", "`")
+
+
+def _salvage_call_json(s):
+    """Best-effort parse of a tool-call JSON object out of `s`, tolerating an
+    unclosed ```tool_call fence: trailing junk after the object (a stray ```,
+    a bogus \\end_tool_call closer, prose), a missing closing brace, or a
+    dangling string. Returns the parsed object/list, or None.
+
+    Uses raw_decode (which ignores trailing data) so a complete-but-followed-by-
+    junk object parses directly; if the object was left unclosed we retry with a
+    few appended braces (and a closing quote) — models sometimes drop the final
+    brace on large `write` payloads."""
     start = s.find("{")
     if start < 0:
+        start = s.find("[")
+    if start < 0:
         return None
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(s)):
-        c = s[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return s[start:i + 1]
+    frag = s[start:].strip()
+    changed = True
+    while changed:
+        changed = False
+        for j in _JUNK_TAILS:
+            if frag.endswith(j):
+                frag = frag[:-len(j)].rstrip()
+                changed = True
+    for close in ("", "}", "}}", '"}', '"}}', ']'):
+        try:
+            obj, _ = _JSON_DEC.raw_decode(frag + close)
+            return obj
+        except Exception:
+            continue
     return None
 
 
@@ -259,12 +282,12 @@ def parse_tool_calls(text):
         calls = _to_openai(_collect(blocks))
         if calls:
             return calls, _FENCE.sub("", text).strip()
-    # 2) UNCLOSED ```tool_call fence (model stopped right after the JSON).
+    # 2) UNCLOSED ```tool_call fence (model stopped/garbled after the JSON).
     m = _OPENFENCE.search(text)
     if m:
-        obj = _first_json_object(m.group(1))
-        if obj and _is_call(_load(obj)):
-            calls = _to_openai(_normalize(_load(obj)))
+        parsed = _salvage_call_json(m.group(1))
+        if _is_call(parsed):
+            calls = _to_openai(_normalize(parsed))
             if calls:
                 return calls, text[:m.start()].strip()
     # 3) Any other fenced block that looks like a call (```json or bare tag).

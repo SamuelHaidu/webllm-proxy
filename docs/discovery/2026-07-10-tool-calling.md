@@ -183,3 +183,51 @@ fix (not yet done):** disable ChatGPT's native tools at the source by setting th
 right field(s) in the `f/conversation` request body — we already rewrite that
 body via CDP `Fetch` (see `_apply_overrides`). Candidates to probe:
 `system_hints`, `conversation_mode`, or an explicit tools/`disabled_tools` field.
+
+## Update 2 — deactivating Canvas/Code, prompt tuning, and the `InvalidRecipient` wall
+
+The user turned off Canvas and Code in ChatGPT settings and we retried. Findings,
+in order (each contract tweak fixed the previous failure and exposed the next —
+classic whack-a-mole, so we stopped after establishing the root cause):
+
+1. **Settings toggle didn't remove the sandbox.** The single-shot "list files
+   with the bash tool" probe *still* returned ChatGPT's container root
+   (`.dockerenv`, `caas_toolbox`, `openai`). Deactivating Canvas/Code did not
+   disable the code interpreter the models reach for.
+2. **"This is a workaround" framing** (added at the user's suggestion, which they'd
+   found works): the contract now says the native code/canvas tools are off *on
+   purpose*, the `tool_call` blocks are a tested harness that runs on the user's
+   real machine, and the model must not ask permission or claim the tools are
+   down. This stopped `gpt-5-mini` from balking.
+3. **"Never paste code inline" clause:** next, `gpt-5-mini` dumped the file as a
+   ```` ```python ```` block instead of calling `write`. Added: to create/change a
+   file you MUST use the write/edit tool; reply text is discarded, not saved.
+   After this it emitted a real `write` tool_call.
+4. **Malformed large tool JSON (fixed):** that `write` call had the full, correct
+   file content but a broken envelope — missing the final `}` and a bogus
+   `\end_tool_call` closer instead of ```` ``` ````. Added `_salvage_call_json`
+   (strip junk closers; `raw_decode` to ignore trailing data; retry with a few
+   appended braces / a closing quote). Verified it recovers the real 2.4 KB
+   `write` call.
+5. **`InvalidRecipient` — the architectural wall.** On a later run the model
+   produced **no** text fence at all and reported that "the `write` tool is
+   repeatedly returning an `InvalidRecipient` error." That is a **ChatGPT backend
+   error**: the model tried to invoke `write` through ChatGPT's *native*
+   recipient-based tool channel (the same mechanism as `web.run`/`python`), and
+   the backend rejected our unknown tool name. It's **non-deterministic** whether
+   a model uses our text contract or the native channel.
+
+**Net:** `gpt-5-mini` (no sandbox) is closer than the thinking model, and the
+prompt + parser fixes are real improvements (balk → inline code → real
+tool_call), but reliability is capped by the models preferring ChatGPT's native
+tool channel — which either runs in ChatGPT's sandbox or 400s our tool names
+(`InvalidRecipient`). Prompt text can't fully win against that.
+
+**Best lead now (supersedes the request-body idea above):** stop fighting the
+native channel and *use* it. When a model routes a tool call natively, it shows
+up in the `f/conversation` SSE as an `assistant` message with `recipient` = the
+tool name (cf. web search's `recipient:"web"`, which `sse.py` already reads).
+Intercept those: map a native tool-call attempt (recipient == a declared tool,
+args in `content`) straight to OpenAI `tool_calls`. Needs a capture of the SSE at
+the moment of an `InvalidRecipient` attempt to confirm the args are present in
+the stream before the backend rejects them.
