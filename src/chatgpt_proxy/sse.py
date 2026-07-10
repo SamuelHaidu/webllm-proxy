@@ -26,10 +26,17 @@ _IGNORED_TYPES = {
     "resume_conversation_token", "input_message", "message_marker",
     "title_generation", "server_ste_metadata", "message_stream_complete",
     "conversation_detail_metadata", "conversation_detail", "sync",
+    "url_moderation",
 }
 # content_types whose text is the model's thinking, not the answer
 _REASONING_TYPES = {"thoughts", "reasoning_recap", "reasoning", "thinking",
                     "reasoning_summary", "cot"}
+
+# Private-use-area citation/link markers embedded in native-tool (web search)
+# answers. Format: <START><kind>[<SEP><field>...]<END>. The web UI replaces
+# these using content_references metadata; we strip them (rendering `url`
+# markers as plain markdown links) so API consumers get clean text.
+_PUA_START, _PUA_SEP, _PUA_END = "", "", ""
 
 
 class V1DeltaParser:
@@ -39,6 +46,8 @@ class V1DeltaParser:
         self.cur_content_type = None
         self.cur_channel = None
         self.cur_role = None
+        self.cur_recipient = None
+        self._pua_buf = ""
         self.content = ""
         self.reasoning = ""
         self.finish_reason = None
@@ -114,6 +123,7 @@ class V1DeltaParser:
         self.message_id = msg.get("id", self.message_id)
         self.cur_channel = msg.get("channel")
         self.cur_role = (msg.get("author") or {}).get("role")
+        self.cur_recipient = msg.get("recipient")
         self.cur_content_type = (msg.get("content") or {}).get("content_type")
         self.model_slug = (msg.get("metadata") or {}).get("model_slug") or self.model_slug
 
@@ -133,11 +143,61 @@ class V1DeltaParser:
         # only the assistant's own messages are output; skip the user echo etc.
         if self.cur_role not in (None, "assistant"):
             return []
+        # skip tool-routed messages (search query -> recipient "web", etc.);
+        # only the user-visible answer has recipient "all".
+        if self.cur_recipient not in (None, "all"):
+            return []
         if self.cur_content_type in _REASONING_TYPES:
             self.reasoning += text
             return [("reasoning", text)]
-        self.content += text
-        return [("content", text)]
+        cleaned = self._declutter(text)
+        if not cleaned:
+            return []
+        self.content += cleaned
+        return [("content", cleaned)]
+
+    def _declutter(self, text):
+        """Strip ChatGPT web citation/link markers (PUA-delimited) from content,
+        streaming-safe: an unterminated marker is held until its end arrives."""
+        buf = self._pua_buf + text
+        out = []
+        i = 0
+        while True:
+            s = buf.find(_PUA_START, i)
+            if s == -1:
+                out.append(buf[i:])
+                self._pua_buf = ""
+                break
+            out.append(buf[i:s])
+            e = buf.find(_PUA_END, s)
+            if e == -1:
+                self._pua_buf = buf[s:]  # incomplete marker; hold it
+                break
+            out.append(self._render_marker(buf[s + 1:e]))
+            i = e + 1
+        return "".join(out)
+
+    @staticmethod
+    def _render_marker(token):
+        parts = token.split(_PUA_SEP)
+        if parts and parts[0] == "url":
+            if len(parts) >= 3 and parts[-1].startswith("http"):
+                return f"[{parts[1] or parts[-1]}]({parts[-1]})"
+            if len(parts) == 2:
+                return parts[1]
+        return ""  # cite / genui / video / other: drop
+
+    def finalize(self):
+        """Emit any held plain text at stream end (drop a dangling marker)."""
+        if not self._pua_buf:
+            return []
+        leftover, self._pua_buf = self._pua_buf, ""
+        s = leftover.find(_PUA_START)
+        txt = leftover if s == -1 else leftover[:s]
+        if txt:
+            self.content += txt
+            return [("content", txt)]
+        return []
 
 
 class StreamAccumulator:
@@ -160,4 +220,5 @@ class StreamAccumulator:
         if self._buf:
             events += self.parser.feed_line(self._buf)
             self._buf = ""
+        events += self.parser.finalize()
         return events
