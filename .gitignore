@@ -1,0 +1,30 @@
+# Browser profiles / login sessions (never commit — contain cookies)
+# The default profile lives outside the repo (~/.local/share/chatgpt-proxy/),
+# but ignore any local ones too.
+*_profile/
+.cloak-profile/
+cloak-profile/
+profile_config.txt
+
+# uv / venv / env
+.venv/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

@@ -1,0 +1,33 @@
+{
+  "WARNING_BANNER": "!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. SHARING THIS INFORMATION IS LIKE SHARING YOUR PASSWORD. !!!!!!!!!!!!!!!!!!!!",
+  "user": {
+    "id": "<REDACTED_PII>",
+    "name": "<REDACTED_PII>",
+    "email": "<REDACTED_PII>",
+    "image": "<REDACTED_PII>",
+    "picture": "<REDACTED_PII>",
+    "idp": "google-oauth2",
+    "iat": 1783707243,
+    "mfa": false
+  },
+  "expires": "2026-10-08T18:14:09.724Z",
+  "account": {
+    "id": "<REDACTED_PII>",
+    "planType": "free",
+    "structure": "personal",
+    "isUsageBasedSeatEnabled": false,
+    "isConversationClassifierEnabledForWorkspace": true,
+    "isFedrampCompliantWorkspace": false,
+    "isDelinquent": false,
+    "residencyRegion": "no_constraint",
+    "computeResidency": "no_constraint"
+  },
+  "accessToken": "<REDACTED len=19>",
+  "authProvider": "openai",
+  "sessionToken": "<REDACTED len=4268>",
+  "rumViewTags": {
+    "light_account": {
+      "fetched": false
+    }
+  }
+}

@@ -1,0 +1,33 @@
+event: delta_encoding
+data: "v1"
+
+data: {"type": "resume_conversation_token", "kind": "topic", "token": "<REDACTED len=420>", "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b"}
+
+data: {"type": "input_message", "input_message": {"id": "ff26b54e-36cd-4f4c-8a2e-9086ef26f3f2", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": 1783708660.553, "update_time": null, "content": {"content_type": "text", "parts": ["Without me repeating them, what is my name and my favorite number?"]}, "status": "finished_successfully", "end_turn": null, "weight": 1.0, "metadata": {"serialization_metadata": {"custom_symbol_offsets": []}, "request_id": "1c10c774-face-4b05-8fbc-826f27eaa86e", "otrace_id": "6a513bf4000000004fa0edd8d11412d0", "message_source": null, "turn_exchange_id": "170a13d2-99dd-41d9-8125-038c15074b30", "working_turn_id": "170a13d2-99dd-41d9-8125-038c15074b30", "turn_trace_id": "7e551749-9e37-4f8b-9c77-3ea9f6fe296a", "useragent": {"client_type": "web", "is_mobile": false, "is_mobile_app": false, "is_desktop_app": false, "is_native_app": false, "is_native_app_apple": false, "is_mobile_app_ios": false, "is_desktop_app_macos": false, "is_aura_app_macos": false, "is_aura_web": false, "is_sora_ios": false, "is_agora_ios": false, "is_agora_android": false, "is_desktop_app_windows": false, "is_electron_app": false, "is_mobile_app_android": false, "is_mobile_web": false, "is_mobile_web_ios": false, "is_mobile_web_android": false, "is_ios": false, "is_android": false, "is_macos": false, "is_windows": true, "is_linux": false, "is_chatgpt_client": false, "is_moshi_client": false, "is_sora_client": false, "is_agora_client": false, "is_browserbased_app": true, "is_chatgpt_api": false, "is_slack": false, "is_chatkit_web": false, "is_chatkit_synthetic": false, "is_kakao_talk": false, "is_codex_desktop": false, "is_offline_caching": false, "app_version": null, "build_number": null, "user_agent": "mozilla/5.0 (windows nt 10.0; win64; x64) applewebkit/537.36 (khtml, like gecko) chrome/146.0.0.0 safari/537.36", "app_environment": null, "os_version": null, "device_model": null, "user_client_type": "desktop_web"}, "paragen_stream_type": "default", "resolved_model_slug": "gpt-5-5", "parent_id": "4669d413-318e-4528-b2dc-39789fae50e2"}, "recipient": "all", "channel": null}, "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b"}
+
+event: delta
+data: {"p": "", "o": "add", "v": {"message": {"id": "e414ef4b-6b21-4650-b15c-fd1061cb2cec", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1783708660.834415, "update_time": null, "content": {"content_type": "text", "parts": [""]}, "status": "in_progress", "end_turn": null, "weight": 1.0, "metadata": {"citations": [], "content_references": [], "story_events": [], "resolved_model_slug": "gpt-5-5", "request_id": "1c10c774-face-4b05-8fbc-826f27eaa86e", "message_type": "next", "turn_exchange_id": "170a13d2-99dd-41d9-8125-038c15074b30", "working_turn_id": "170a13d2-99dd-41d9-8125-038c15074b30", "model_slug": "gpt-5-5", "default_model_slug": "auto", "parent_id": "ff26b54e-36cd-4f4c-8a2e-9086ef26f3f2", "model_switcher_deny": []}, "recipient": "all", "channel": "final"}, "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b", "error": null, "error_code": null}, "c": 0}    
+
+data: {"type": "message_marker", "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b", "message_id": "e414ef4b-6b21-4650-b15c-fd1061cb2cec", "marker": "user_visible_token", "event": "first"}
+
+data: {"type": "message_marker", "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b", "message_id": "e414ef4b-6b21-4650-b15c-fd1061cb2cec", "marker": "final_channel_token", "event": "first"}
+
+event: delta
+data: {"p": "/message/content/parts/0", "o": "append", "v": "Your name is **Zephyrine**, and your favorite number is **"}     
+
+event: delta
+data: {"v": "27**."}  
+
+event: delta
+data: {"p": "", "o": "patch", "v": [{"p": "/message/status", "o": "replace", "v": "finished_successfully"}, {"p": "/message/end_turn", "o": "replace", "v": true}, {"p": "/message/metadata", "o": "append", "v": {"search_result_groups": [], "finish_details": {"type": "stop", "stop_tokens": [200002]}, "is_complete": true, "can_save": true}}]} 
+
+data: {"type": "message_marker", "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b", "message_id": "e414ef4b-6b21-4650-b15c-fd1061cb2cec", "marker": "last_token", "event": "last"}
+
+data: {"type": "server_ste_metadata", "metadata": {"server_ttfvt_ms": 1817.395475693047, "conduit_prewarmed": true, "plan_type": "free", "plan_type_bucket": "free", "harness": "harmony", "user_agent": "web_desktop", "service": null, "tool_name": null, "tool_invoked": false, "fast_convo": true, "warmup_state": "warm", "is_first_turn": false, "cluster_region": "brazilsouth", "model_slug": "gpt-5-5", "region": null, "is_multimodal": null, "did_auto_switch_to_reasoning": false, "auto_switcher_race_winner": null, "is_autoswitcher_enabled": false, "is_search": null, "did_prompt_contain_image": false, "search_tool_call_count": null, "search_tool_query_types": null, "message_id": "e414ef4b-6b21-4650-b15c-fd1061cb2cec", "request_id": "1c10c774-face-4b05-8fbc-826f27eaa86e", "turn_exchange_id": "170a13d2-99dd-41d9-8125-038c15074b30", "turn_trace_id": "7e551749-9e37-4f8b-9c77-3ea9f6fe296a", "a32e6ebcb": 1, "resume_with_websockets": true, "low_turn_topic_ttl": false, "streaming_async_status": false, "replace_stream_status": true, "temporal_conversation_turn": false, "pro_mode_turn_topic_streaming": true, "turn_use_case": "text", "turn_mode": "default"}, "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b"}
+
+data: {"type": "message_stream_complete", "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b"}
+
+data: {"type": "conversation_detail_metadata", "banner_info": null, "blocked_features": [], "model_limits": [], "limits_progress": [{"feature_name": "deep_research", "remaining": 5, "reset_after": "2026-08-09T18:37:42.692711+00:00"}, {"feature_name": "file_upload", "remaining": 5, "reset_after": "2026-07-11T18:37:42.692727+00:00"}, {"feature_name": "paste_text_to_file", "remaining": 3, "reset_after": "2026-07-11T18:37:42.692733+00:00"}, {"feature_name": "image_gen", "remaining": 5, "reset_after": "2026-07-11T18:37:42.692737+00:00"}], "default_model_slug": "auto", "atlas_mode_enabled": null, "conversation_id": "6a513be7-6b04-83e9-80c1-54bfe183173b"}
+
+data: [DONE]
+
