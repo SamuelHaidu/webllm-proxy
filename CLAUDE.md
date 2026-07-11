@@ -10,28 +10,76 @@ coding agents / tools built against the OpenAI API work for people in
 enterprise environments who have a ChatGPT web login but no official API
 key/budget.
 
-The implementation lives in **`src/chatgpt_proxy/`** (a `uv` package,
-`chatgpt-web-proxy`). Earlier prototypes that drove the web UI by DOM
+The implementation lives in **`src/webllm_proxy/`** (a `uv` package,
+**`webllm-proxy`**, renamed from `chatgpt-web-proxy` in the 2026-07-10
+unification — see below). Earlier prototypes that drove the web UI by DOM
 scraping — `chatgpt_api_server.py`, `manual_login.py`, a `go-api/` Go/CDP
 port, and a React `frontend/` — were **removed in the 2026-07-10 refactor**
 (full-Python, lean, uv-packaged). The current approach captures the real
-`backend-api/f/conversation` network stream over CDP rather than scraping the
-DOM.
+network stream over CDP rather than scraping the DOM.
+
+**Now multi-backend.** The same idea is generalized to any login-only web LLM
+via a **provider/adapter** architecture. Two providers ship: `chatgpt`
+(chatgpt.com → OpenAI `/v1/chat/completions`) and `databricks` (Databricks
+Genie/`llmproxy` → Anthropic `/v1/messages`). One CLI:
+`webllm-proxy serve|login --provider chatgpt|databricks`.
 
 ### Status & key findings (2026-07-10)
 
-- **Proxy BUILT + verified**, now a `uv` package in **`src/chatgpt_proxy/`**.
-  Run: `uv sync` then `uv run chatgpt-proxy` (subcommands: `serve` default,
-  `login`, `install`). Port 5102. Working: `/v1/models` (real slugs),
-  `/v1/chat/completions` stream + non-stream, model selection, thinking
-  models, stateful recall. See `README.md` and `docs/discovery/`.
-  Mechanism: type prompt in the browser → capture the `f/conversation` SSE via
-  CDP `Network.streamResourceContent` (a `window.fetch` hook does NOT work) →
-  parse `v1` deltas → OpenAI chunks; model override via CDP `Fetch`.
+- **UNIFIED into `webllm-proxy` + Databricks provider ADDED (2026-07-10).**
+  Refactored the ChatGPT-only package into one tool with a **provider/adapter**
+  architecture (commit "Unify into webllm-proxy…"):
+  - `src/webllm_proxy/core/` = provider-agnostic transport. `browser.py` runs
+    CloakBrowser on one worker thread and captures the chosen response over CDP,
+    feeding raw bytes through a provider **`Accumulator`**; `process.py`
+    (lock/pid hygiene) + `env.py` are shared. Nothing in core is backend-aware.
+  - `providers/base.py` = the **`Provider`** interface (config + browser hooks
+    `authed`/`capture_match`/`trigger`/optional Fetch rewrite; `make_accumulator`;
+    `register_routes`) + `Accumulator`/`PassthroughAccumulator`/`Job`.
+  - `providers/chatgpt/` = the ported ChatGPT backend; `providers/databricks/` =
+    the new one. `tests/` are browser-free (parsers, accumulators, mapping).
+  - Run: `uv sync` then `uv run webllm-proxy serve --provider <name>`
+    (`login`/`install` too). **The CLI/package is `webllm-proxy`, not
+    `chatgpt-proxy`.** Profiles/env keep the old `CHATGPT_PROXY_*` names for
+    back-compat, so existing ChatGPT logins still work.
+- **Databricks provider (2026-07-10)** — see
+  `docs/discovery/2026-07-10-databricks-llmproxy.md`. `POST /v1/messages`
+  (Anthropic Messages, port 5103) is a **near pass-through** to the Genie
+  `POST /ajax-api/2.0/conversation/llmproxy/` channel, which is itself a
+  passthrough to the **native Anthropic Messages API on AWS Bedrock** (Claude
+  Sonnet 4.5, native `tool_use`, extended thinking). Mechanism: wrap the request
+  in the `_llmproxy_fields` envelope (`model`→`model_registration`), issue the
+  fetch **in-page** (cookie auto-attaches, CSRF from `/auth/session/info` stays
+  in the browser), drain the body so `loadingFinished` fires, stream the native
+  SSE straight back (`PassthroughAccumulator`, no translation). **No
+  Turnstile/PoW** — auth is just session cookie + `x-csrf-token` +
+  `x-databricks-org-id`. Requires `DATABRICKS_PROXY_URL` (workspace URL with
+  `?o=`). Validated end-to-end (streaming, native tools, sequential, headless
+  reuse). **Gotchas:** llmproxy rejects a request with **no `system`** (empty
+  `400`) → default injected; pass the **org id from config** (the SPA drops `?o=`
+  after routing). Models are entitlement-gated per `client_id`
+  (`editor-assistant-agent-mode` has `claude-4-5-sonnet`; opus/haiku/gemini/llama
+  registered but disabled). HAR explorer: `scripts/har_explore.py`.
+- **Proxy BUILT + verified** (ChatGPT provider). Port 5102. Working:
+  `/v1/models` (real slugs), `/v1/chat/completions` stream + non-stream, model
+  selection, thinking models, stateful recall. See `README.md` and
+  `docs/discovery/`. Mechanism: type prompt in the browser → capture the
+  `f/conversation` SSE via CDP `Network.streamResourceContent` (a `window.fetch`
+  hook does NOT work) → parse `v1` deltas → OpenAI chunks; model override via
+  CDP `Fetch`.
 - **Tool/function calling DONE (2026-07-10)** — see
   `docs/discovery/2026-07-10-tool-calling.md`. ChatGPT web has no client-facing
-  function-calling API, so it's **emulated** (`tools.py`): inject a `tool_call`
-  prompt contract, parse the model's block back into OpenAI `tool_calls`
+  function-calling API, so it's **emulated** (`providers/chatgpt/tools.py`).
+  **Contract updated 2026-07-10** to the AgentClip **tag** protocol (adapted from
+  `~/projects/copy-and-paste-agent/agentclip/code/system_prompt.md`), which the
+  web models follow better than fenced blocks: `<assistant>` text +
+  `<tool>{"tool_name":…, …flat args}</tool>`, results fed back as
+  `<tool-response>`. `build_preamble` renders the client's tools in this style
+  (keeping the no-sandbox / real-environment / deliberate-workaround guardrails);
+  `parse_tool_calls` reads `<tool>` blocks (closed + unclosed/salvaged) back into
+  OpenAI `tool_calls`. The legacy fenced ```` ```tool_call ```` forms + bare JSON
+  remain as fallbacks. Original mechanism: inject the prompt contract,
+  parse the model's block back into OpenAI `tool_calls`
   (`finish_reason:"tool_calls"`), feed `role:"tool"` results back as the next
   turn. `plan_turn` now signature-diffs the whole `messages[]` (not just user
   turns) so tool flows continue on one ChatGPT conversation. Contract mandates

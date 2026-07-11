@@ -260,3 +260,43 @@ OpenAI↔Anthropic conversion). Keep a headless browser-backed session (login
 once), issue the `llmproxy` fetch in-page, and stream the native Anthropic SSE
 straight through. Also expose the two GPT-4.1 deployments via the
 `chat/completions` path if an OpenAI-shaped option is wanted.
+
+## Update 2 (2026-07-10) — built + validated as a `webllm-proxy` provider
+
+Implemented as the `databricks` provider in the unified **`webllm-proxy`** tool
+(`src/webllm_proxy/providers/databricks/`). It exposes **`POST /v1/messages`**
+(Anthropic Messages) on port 5103 and is a near pass-through: wrap the request in
+the `_llmproxy_fields` envelope (`model` → `model_registration`), issue the fetch
+**in-page** over CDP (drain the body so `loadingFinished` fires), and stream the
+native Anthropic SSE straight back. Run:
+
+```bash
+DATABRICKS_PROXY_URL="https://<workspace>.cloud.databricks.com/?o=<org>" \
+  webllm-proxy login   --provider databricks     # once, headed
+DATABRICKS_PROXY_URL="…same…" webllm-proxy serve --provider databricks
+```
+
+**Validated end-to-end** against Claude Sonnet 4.5: streaming text, **native
+`tool_use`** (a client-declared `get_weather` tool → `stop_reason:"tool_use"` +
+`input_json_delta`), several sequential requests, **headless reuse** of the
+one-time login, and graceful shutdown (0 orphan Chrome). The transport is solid;
+tool calling is native (no emulation).
+
+**Two gotchas fixed while wiring the server (the probe didn't hit them because it
+issued all calls in one page context):**
+
+1. **`system` is required.** A request with **no `system` block** gets a
+   Databricks edge **`400` with an empty body** (not an llmproxy JSON error).
+   The probe always sent a `system`; a bare `messages`-only request fails. The
+   provider now injects a default `system` when the client sends none.
+2. **Org id must be passed in, not read from the page.** The in-page fetch first
+   read the org from `location.search` (`?o=`), but the **workspace SPA drops the
+   query after it routes**, so the *second* request onward sent an empty
+   `x-databricks-org-id` → the same empty-body `400`. Fixed by passing the org id
+   from config (parsed from `DATABRICKS_PROXY_URL`) into the in-page fetch.
+
+**Model scoping note:** on `client_id: editor-assistant-agent-mode` with a weak
+`system`, the model deflects generic prompts ("I need to clarify the scope of
+this assistant…") — the channel is scoped to the Databricks editor assistant. A
+strong client system prompt (e.g. a coding-agent prompt from `pi`) overrides
+this. Not a proxy issue; a product-level constraint of the channel.
