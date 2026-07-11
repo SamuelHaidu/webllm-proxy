@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from webllm_proxy.providers.chatgpt.tools import (  # noqa: E402
-    build_preamble, native_to_openai, parse_tool_calls, tool_names,
+    build_preamble, format_tool_result, native_to_openai, parse_tool_calls, tool_names,
 )
 
 ALLOWED = {"write", "bash"}
@@ -53,6 +53,35 @@ def test_tool_names():
     assert tool_names(None) == set()
 
 
+def test_parse_tool_tag_flat():
+    text = ('<assistant>\nOn it.\n</assistant>\n'
+            '<tool>{"tool_name": "write", "path": "a.py", "content": "x=1"}</tool>')
+    calls, leftover = parse_tool_calls(text)
+    assert len(calls) == 1 and calls[0]["function"]["name"] == "write"
+    assert json.loads(calls[0]["function"]["arguments"]) == {"path": "a.py", "content": "x=1"}
+    assert leftover == "On it."
+
+
+def test_parse_tool_tag_unclosed():
+    text = '<tool>{"tool_name": "bash", "command": "ls -la"}'
+    calls, _ = parse_tool_calls(text)
+    assert len(calls) == 1 and calls[0]["function"]["name"] == "bash"
+    assert json.loads(calls[0]["function"]["arguments"])["command"] == "ls -la"
+
+
+def test_parse_assistant_only_is_content():
+    calls, leftover = parse_tool_calls("<assistant>Here is the answer.</assistant>")
+    assert calls == [] and leftover == "Here is the answer."
+
+
+def test_format_tool_result_is_tool_response():
+    out = format_tool_result({"tool_call_id": "c1", "name": "read_file", "content": "000001 hi"},
+                             {"c1": "read_file"})
+    assert out.startswith("<tool-response>") and out.rstrip().endswith("</tool-response>")
+    payload = json.loads(out[len("<tool-response>"):-len("</tool-response>")].strip())
+    assert payload == {"tool_name": "read_file", "ok": True, "result": "000001 hi"}
+
+
 def test_parse_closed_fence():
     text = ('sure\n```tool_call\n'
             '{"name": "write", "arguments": {"path": "a.py", "content": "x"}}\n'
@@ -78,6 +107,7 @@ def test_build_preamble():
     pre = build_preamble("You are helpful.",
                          [{"type": "function", "function": {"name": "write", "description": "w", "parameters": {}}}])
     assert "write" in pre and "You are helpful." in pre
+    assert "<tool>" in pre and "tool_name" in pre  # AgentClip tag contract
     assert build_preamble("", None) == ""
 
 
