@@ -19,20 +19,22 @@
 
 _(keep this section current — overwrite, don't append)_
 
-- **Current phase:** Phase C in progress. Deep-research scoping doc done,
-  offline bundle script done and live-verified. README updates next.
-- **Last completed step:** `scripts/build_offline_bundle.py` written AND run
-  live twice (not just read) — found and fixed two real bugs only visible at
-  runtime (see Findings below: the `uv export` self-reference collision, and
-  the `cloakbrowser-*.tar.gz` glob mismatch). `uv run poe bundle` now
-  produces a working `dist/offline/` (26 dependency wheels + this package's
-  own wheel + a correctly-named, correctly-laid-out CloakBrowser binary
-  archive + both install scripts). `uv run poe check` still green (64 tests)
-  after the script's addition.
-- **Next step:** README.md — "Corporate / air-gapped install" section (point
-  at `uv run poe bundle` + `install_offline.{sh,ps1}`) and "Architecture map"
-  section (the flat `webllm_proxy/` layout from the plan's §3), then `uv run
-  poe release` (build step only — do NOT run `uv publish`, not authorized).
+- **Current phase:** Phase C nearly done. Only `uv run poe release`'s build
+  verification is left.
+- **Last completed step:** README.md rewritten: fixed stale `src/webllm_proxy`
+  / `tools.py` references from before the refactor, added a "Research tool"
+  section (REST examples + CLI), a full "Corporate / air-gapped install"
+  section (the 3 options: internal mirror, pre-staged binary, offline
+  bundle), an "Architecture map" replacing the old "Layout" section (matches
+  the actual flat `webllm_proxy/` tree), a "Development" section
+  (`uv run poe check`/`release`), and filled in the Configuration section's
+  gaps (several `DATABRICKS_PROXY_*` env vars and `WEBLLM_PROXY_DUMP_DIR`
+  existed in code but were never documented — unrelated to this refactor,
+  fixed while already touching this section). `uv run poe check` still green
+  (64 tests) after all edits.
+- **Next step:** `uv run poe release` (`check` + `uv build`) as the final
+  Phase C item and closing verification of the whole effort — **build only,
+  do NOT run `uv publish`**, publishing was never authorized.
 - **Blocking issues:** none. (Non-blocking: the databricks profile's session
   is logged out — pre-existing, unrelated to this refactor; needs
   `webllm-proxy login --provider databricks` headed, not attempted here since
@@ -73,7 +75,7 @@ _(keep this section current — overwrite, don't append)_
 - [x] Deep-research discovery session + doc (scoping note, not a live trigger
       capture — see Phase B Findings; `docs/discovery/2026-07-11-deep-research-scoping.md`)
 - [x] `scripts/build_offline_bundle.py` + `install_offline.{sh,ps1}` — live-verified
-- [ ] README: corporate install + architecture map
+- [x] README: corporate install + architecture map
 - [ ] `uv run poe release`
 
 ## Findings / deviations from plan

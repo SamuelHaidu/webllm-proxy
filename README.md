@@ -20,9 +20,10 @@ tool calling and extended thinking are native.
 
 Both providers wrap a persistent, logged-in **[CloakBrowser](https://github.com/CloakHQ/CloakBrowser)**
 session (a stealth Chromium that passes Cloudflare Turnstile; auto-downloads its
-own binary). A shared **core** runs the page on one worker thread and captures
-the relevant network response over the Chrome DevTools Protocol; each provider
-adapts the rest (see `src/webllm_proxy/providers/base.py`):
+own binary). A shared **transport** runs the page on one worker thread and
+captures the relevant network response over the Chrome DevTools Protocol; each
+provider adapts the rest (see `webllm_proxy/domain/ports.py`'s `Provider`
+interface):
 
 - **chatgpt** — the send endpoint is gated by a single-use Turnstile + PoW token
   only a browser can mint, so per request it types the prompt into the composer
@@ -78,6 +79,37 @@ curl -N http://127.0.0.1:5103/v1/messages -H 'Content-Type: application/json' \
 Available models depend on your workspace entitlements; on the dev account
 `claude-4-5-sonnet` is enabled (see `docs/discovery/2026-07-10-databricks-llmproxy.md`).
 
+## Research tool
+
+An async job API for longer, web-research-style questions: submit a query,
+poll for status, get back a structured markdown report. Backed by a chatgpt
+session (`provider.research_backend()`); mounted automatically by `serve` when
+the active provider supports it.
+
+```bash
+curl -s -X POST http://127.0.0.1:5102/v1/research \
+  -H 'Content-Type: application/json' -d '{"query":"What is the toolz Python library used for?"}'
+# -> {"id": "...", "status": "queued", ...}
+curl -s http://127.0.0.1:5102/v1/research/<id>       # poll until status is succeeded/failed
+curl -s http://127.0.0.1:5102/v1/research            # list jobs
+curl -s -X DELETE http://127.0.0.1:5102/v1/research/<id>
+```
+
+Or let the CLI do the polling:
+
+```bash
+uv run webllm-proxy research "What is the toolz Python library used for?"
+```
+
+Today this always runs the **emulated** backend (a normal chat turn + a
+research-style prompt asking for thorough web search and a structured
+report) — it works on any account, including free-tier, and is the
+guaranteed path. A **Deep Research** backend exists as a documented seam
+(`webllm_proxy/research/backends/deep_research.py`) but ships as an honest
+stub (`available()` is hardcoded `False`) rather than a guessed trigger field;
+see `docs/discovery/2026-07-11-deep-research-scoping.md` for why and what a
+future session needs to do to wire it up on an entitled account.
+
 ## Use with the `pi` coding agent
 
 `~/.pi/agent/models.json` — add whichever provider(s) you run:
@@ -115,10 +147,19 @@ pi -p --provider databricks --model claude-4-5-sonnet "List the .py files in src
 
 `databricks`: `DATABRICKS_PROXY_URL` (required), `DATABRICKS_PROXY_PROFILE`,
 `DATABRICKS_PROXY_HEADLESS`, `DATABRICKS_PROXY_HOST`, `DATABRICKS_PROXY_PORT`,
-`DATABRICKS_PROXY_MODEL`, `DATABRICKS_PROXY_CLIENT_ID`, `DATABRICKS_PROXY_MODELS`.
+`DATABRICKS_PROXY_MODEL`, `DATABRICKS_PROXY_MODELS` (Anthropic channel),
+`DATABRICKS_PROXY_OPENAI_MODELS` (Azure/GPT channel), `DATABRICKS_PROXY_CLIENT_ID`,
+`DATABRICKS_PROXY_AGENT_NAME`, `DATABRICKS_PROXY_AZURE_CLIENT_ID`,
+`DATABRICKS_PROXY_AZURE_API_VERSION`, `DATABRICKS_PROXY_STYLE_RULES` (`0` to
+drop the terse-response-style system prompt addition), `DATABRICKS_PROXY_DEBUG_DUMP`.
 
-Shared: `WEBLLM_PROXY_PROVIDER` (CLI default), `WEBLLM_PROXY_DUMP_SSE` (dump raw
-captured SSE to a file, for debugging).
+Shared: `WEBLLM_PROXY_PROVIDER` (CLI default provider), `WEBLLM_PROXY_DUMP_SSE`
+(dump raw captured SSE to a file, for debugging), `WEBLLM_PROXY_DUMP_DIR`
+(where the redacted `*_last_request.json` debug dumps land when a provider's
+`*_DEBUG_DUMP` flag is on; defaults to the OS temp dir).
+
+CloakBrowser itself (binary install/location, not this package): see
+"Corporate / air-gapped install" below.
 
 ## Design & known limitations
 
@@ -126,27 +167,109 @@ captured SSE to a file, for debugging).
   (per-request Turnstile/PoW). databricks *could* be mostly server-side (cookie
   only), but reuses the same browser-backed transport for now.
 - **chatgpt function calling is emulated** (a `<tool>`/`<assistant>` tag prompt
-  contract — see `tools.py` — plus interception of ChatGPT's own native tool
-  channel). Reliability is model-dependent. `databricks` tool calling is native.
+  contract, `strategies/tool_calling/agentclip.py`, tried after intercepting
+  ChatGPT's own native tool channel, `native_channel.py`). Reliability is
+  model-dependent. `databricks` tool calling is native.
 - **Stateful (chatgpt)** vs **stateless pass-through (databricks)**.
 - **Serialized**: one turn at a time (single browser). `usage` from chatgpt is
   zero; databricks passes through the real Anthropic usage.
 - Automates a web app you're logged into — likely against ToS beyond personal use.
 
-## Layout
+## Architecture map
+
+Flat package, pragmatic clean-architecture layering: `domain` depends on
+nothing else here; `application` depends only on `domain`; every adapter
+(`providers`, `strategies`, `research`, `wire`, `http`, `transport`, `infra`,
+`prompts`) depends inward, never the other way. No DTO/mapper layer —
+`http/*_routes.py` reads/writes the client's raw OpenAI/Anthropic JSON
+directly; the one real internal dataclass (`ChatTurn`) is used where there's
+an actual concept to carry, not a 1:1 wire-JSON copy.
 
 ```
-src/webllm_proxy/
-  __main__.py         unified CLI: serve | login | install  (--provider)
-  server.py           Flask factory: /health + the provider's routes
-  core/               provider-agnostic: browser transport (CDP capture), process/env
+webllm_proxy/
+  cli.py, server.py        argparse CLI (serve|login|install|research);
+                           build_app() composition root (DI wiring)
+  domain/                  ports (Provider, Accumulator, ToolStrategy,
+                           PromptStore, JobStore, ResearchBackend) +
+                           dataclasses (ChatTurn, ResearchRequest/Job)
+  application/             chat.py: conversation continuity + effort mapping;
+                           research.py: submit/poll + the background scheduler
   providers/
-    base.py           Provider interface + Accumulator/Job
-    chatgpt/          OpenAI surface, v1 SSE parse, emulated tools, Fetch override
-    databricks/       Anthropic /v1/messages pass-through to llmproxy
-tests/                browser-free unit tests (parsers, accumulators, mapping)
-docs/discovery/       how each web backend was reverse-engineered
+    chatgpt/               browser hooks (composer, CDP Fetch body rewrite,
+                           SSE capture), config, v1 delta parser
+    databricks/            browser hooks, config, llmproxy/Azure envelopes
+  strategies/tool_calling/ emulation for backends with no native tool_calls:
+                           native_channel.py (intercept ChatGPT's own tool
+                           channel) tried first, agentclip.py (tag-contract
+                           prompt) as fallback
+  research/
+    backends/              emulated.py (ships first, works everywhere) and
+                           deep_research.py (documented stub — see
+                           docs/discovery/2026-07-11-deep-research-scoping.md)
+    jobstore/              in-memory job store (submit -> poll lifecycle)
+  wire/                    pure OpenAI/Anthropic SSE + JSON shaping, no
+                           Flask/browser dependency
+  http/                    thin(ish) Flask blueprints (openai_routes,
+                           anthropic_routes, research_routes, health)
+  transport/               BrowserSession (one worker thread, per-job
+                           timeout) + cross-platform process/lock hygiene
+  infra/                   env/data-dir helpers, logging + correlation ids,
+                           token/secret redaction for debug dumps
+  prompts/                 every prompt this tool injects, as a .md file
+                           (loaded + cached by prompts/loader.py), not a
+                           Python string constant
+tests/                     browser-free unit tests (parsers, accumulators,
+                           wire mapping, prompt loading, research scheduler)
+docs/discovery/            how each web backend was reverse-engineered
+docs/refactor/PROGRESS.md  the modularization effort's own tracking doc —
+                           phase checklist + dated findings, useful context
+                           if you're wondering "why is this built this way"
+scripts/build_offline_bundle.py   see "Corporate / air-gapped install" below
 ```
+
+## Development
+
+`uv sync` (see Install above) already pulls the dev tools (ruff, ty, pytest,
+poethepoet) — they're a default dependency group, no extra flag needed.
+
+```bash
+uv run poe check      # fmt + lint (ruff, strict) + typecheck (ty) + test (pytest)
+uv run poe release    # check + build (uv build); publish is separate/manual
+```
+
+## Corporate / air-gapped install
+
+CloakBrowser's binary download (~200MB) is the one thing that needs internet
+access beyond PyPI, and it's the one most likely to be blocked by a
+TLS-inspecting corporate proxy (e.g. Netskope) or an air-gapped policy. Three
+options, pick whichever fits:
+
+1. **Internal mirror** — point `CLOAKBROWSER_DOWNLOAD_URL` at a host you
+   control that mirrors the binary; also set `HTTPS_PROXY`/`HTTP_PROXY` and
+   `REQUESTS_CA_BUNDLE`/`SSL_CERT_FILE` (your corporate root CA) if the
+   gateway does TLS inspection.
+2. **Pre-staged binary** — copy a CloakBrowser binary to the target machine
+   yourself and set `CLOAKBROWSER_BINARY_PATH` to it; `webllm-proxy install`
+   then skips the download entirely.
+3. **Offline bundle** — on a machine *with* internet access:
+
+   ```bash
+   uv run poe bundle    # -> dist/offline/
+   ```
+
+   This collects this package's own wheel + every dependency wheel (via `uv
+   build` + `uv export --no-emit-project` + `pip download`), archives the
+   already-installed CloakBrowser binary (run `webllm-proxy install` first),
+   and writes `install_offline.sh` / `install_offline.ps1`. Copy the whole
+   `dist/offline/` directory to the target machine and run the install
+   script for your OS — it does `pip install --no-index --find-links wheels
+   webllm-proxy` and extracts the CloakBrowser archive into the same cache
+   dir (`~/.cloakbrowser/...`) CloakBrowser's own lookup already checks, so
+   no further env var is needed.
+
+`webllm-proxy install` prints this same guidance if a download fails, rather
+than dying silently. A Docker fallback image, `cloakhq/cloakbrowser`, also
+exists if none of the above fit your environment.
 
 ## Docs
 
