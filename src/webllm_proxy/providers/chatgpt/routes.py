@@ -223,6 +223,8 @@ def register(app, session, provider):
                 if stream:
                     def gen_tc():
                         yield chunk(cid, created, resp_model, {"role": "assistant"})
+                        if reasoning:
+                            yield chunk(cid, created, resp_model, {"reasoning_content": reasoning})
                         d = {"tool_calls": [{
                             "index": i, "id": c["id"], "type": "function",
                             "function": c["function"],
@@ -234,12 +236,13 @@ def register(app, session, provider):
                         yield "data: [DONE]\n\n"
                     return Response(gen_tc(), mimetype="text/event-stream",
                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+                tc_msg = {"role": "assistant", "content": leftover or None, "tool_calls": calls}
+                if reasoning:
+                    tc_msg["reasoning_content"] = reasoning
                 return jsonify({
                     "id": cid, "object": "chat.completion", "created": created,
                     "model": resp_model_out,
-                    "choices": [{"index": 0, "finish_reason": "tool_calls",
-                                 "message": {"role": "assistant",
-                                             "content": leftover or None, "tool_calls": calls}}],
+                    "choices": [{"index": 0, "finish_reason": "tool_calls", "message": tc_msg}],
                     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                 })
             if stream:

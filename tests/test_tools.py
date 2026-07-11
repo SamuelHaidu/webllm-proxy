@@ -39,6 +39,34 @@ def test_native_unknown_nonjson_dropped():
     assert native_to_openai([{"name": "python", "arguments": "print(1)"}], ALLOWED) == []
 
 
+def test_native_container_exec_hijacked_to_bash():
+    # Thinking model's ChatGPT sandbox call -> re-routed to the client bash tool.
+    c = native_to_openai(
+        [{"name": "container.exec",
+          "arguments": "bash -lc pwd && ls -la && find . -maxdepth 2 -type f"}], ALLOWED)
+    assert len(c) == 1 and c[0]["function"]["name"] == "bash"
+    args = json.loads(c[0]["function"]["arguments"])
+    assert args == {"command": "pwd && ls -la && find . -maxdepth 2 -type f"}
+
+
+def test_native_container_exec_quoted_command():
+    c = native_to_openai(
+        [{"name": "container.exec", "arguments": "bash -lc 'python -m pytest -q'"}], ALLOWED)
+    assert len(c) == 1 and json.loads(c[0]["function"]["arguments"]) == {"command": "python -m pytest -q"}
+
+
+def test_native_container_exec_json_command():
+    c = native_to_openai(
+        [{"name": "container.exec", "arguments": '{"command": "echo hi"}'}], ALLOWED)
+    assert len(c) == 1 and json.loads(c[0]["function"]["arguments"]) == {"command": "echo hi"}
+
+
+def test_native_container_exec_dropped_without_shell_tool():
+    # No shell tool declared -> nothing to hijack to, so it's dropped (not faked).
+    assert native_to_openai(
+        [{"name": "container.exec", "arguments": "bash -lc ls"}], {"write", "read"}) == []
+
+
 def test_native_multiple_preserved():
     c = native_to_openai([
         {"name": "write", "arguments": '{"path": "calc.py", "content": "..."}'},
@@ -72,6 +100,15 @@ def test_parse_tool_tag_unclosed():
 def test_parse_assistant_only_is_content():
     calls, leftover = parse_tool_calls("<assistant>Here is the answer.</assistant>")
     assert calls == [] and leftover == "Here is the answer."
+
+
+def test_parse_assistant_unclosed_does_not_leak_tag():
+    # Model stops generating before the closing </assistant> (e.g. hit a token
+    # limit) -- the literal tag must not leak into the visible reply.
+    calls, leftover = parse_tool_calls("<assistant>\nAll tests passed successfully!")
+    assert calls == []
+    assert leftover == "All tests passed successfully!"
+    assert "<assistant>" not in leftover
 
 
 def test_format_tool_result_is_tool_response():

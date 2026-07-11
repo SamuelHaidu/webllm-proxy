@@ -111,8 +111,22 @@ class V1DeltaParser:
                 msg = v.get("message") or {}
                 if msg:
                     self._set_message(msg)
-                    parts = (msg.get("content") or {}).get("parts") or []
+                    content = msg.get("content") or {}
+                    parts = content.get("parts") or []
                     first = parts[0] if parts and isinstance(parts[0], str) else ""
+                    # Reasoning delivered as content.thoughts[] (each a {summary,
+                    # content} block) rather than parts — the thinking model's
+                    # chain-of-thought. content_type is "thoughts" so _emit routes
+                    # it to reasoning.
+                    if not first and isinstance(content.get("thoughts"), list):
+                        first = self._thoughts_text(content["thoughts"])
+                    # A native tool call (recipient != all) whose whole payload
+                    # arrives in one `add` as content.text with content_type
+                    # "code" and NO parts (e.g. `container.exec`: `bash -lc ...`).
+                    # The parts-only read misses it, so pull content.text here.
+                    if (not first and self.cur_recipient not in (None, "all")
+                            and isinstance(content.get("text"), str)):
+                        first = content["text"]
                     return self._emit(first) if first else []
             return []
         if o == "append":
@@ -160,7 +174,11 @@ class V1DeltaParser:
         if self.cur_recipient not in (None, "all"):
             self._native_append(text)
             return []
-        if self.cur_content_type in _REASONING_TYPES:
+        # Reasoning: either a thinking content_type, or ChatGPT's "commentary"
+        # channel (the status/thinking narration it streams before the answer,
+        # e.g. "I'm adding the parser first ..."). The real answer is on channel
+        # "final"/null, so this never steals answer text.
+        if self.cur_content_type in _REASONING_TYPES or self.cur_channel == "commentary":
             self.reasoning += text
             return [("reasoning", text)]
         cleaned = self._declutter(text)
@@ -168,6 +186,22 @@ class V1DeltaParser:
             return []
         self.content += cleaned
         return [("content", cleaned)]
+
+    @staticmethod
+    def _thoughts_text(thoughts):
+        """Flatten a `content.thoughts` list ([{summary, content}, ...]) into one
+        reasoning string, keeping each block's short summary as a bold heading."""
+        out = []
+        for t in thoughts:
+            if not isinstance(t, dict):
+                continue
+            summary = (t.get("summary") or "").strip()
+            body = (t.get("content") or "").strip()
+            if summary and body:
+                out.append(f"**{summary}**\n{body}")
+            elif summary or body:
+                out.append(summary or body)
+        return "\n\n".join(out)
 
     def _native_append(self, text):
         """Accumulate streamed argument text for the current native tool call,

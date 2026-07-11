@@ -277,3 +277,190 @@ tools at all: every message was `recipient:"all"` and it **hallucinated**
 "Implemented calc.py and test_calc.py ... Result: ALL TESTS PASSED" against an
 empty dir. So `gpt-5-mini` + native interception is the working combo; the newer
 mini fabricates completion instead of calling tools.
+
+## Update 4 — AgentClip tag contract adopted; validated with `pi`; a leak fixed
+
+`tools.py` was rewritten to speak the same tag protocol as
+`~/projects/copy-and-paste-agent/agentclip/code/system_prompt.md`
+(`<assistant>`/`<tool>`/`<tool-response>`, flat `{"tool_name": ..., ...args}`
+JSON) instead of the old ```` ```tool_call ```` fence (commit `274f312`). Compared
+against the AgentClip source, the port keeps its tag semantics and flat-JSON
+shape but intentionally diverges on two points already covered above: **at most
+one `<tool>` per reply** (AgentClip allows several; our transport is a single
+serialized browser conversation, so parallel calls race — see Update 1) and the
+contract is generated per-request from the caller's OpenAI `tools=[...]`
+instead of a fixed static tool roster.
+
+Re-ran the exact real-world validation from Update 1/3 — `pi`, `--tools
+write,read,bash`, "build a recursive-descent calculator (`calc.py` +
+`test_calc.py`)" — against a live headless session, once per model:
+
+- **`gpt-5-mini` (2 runs, fresh dirs):** both fully worked. 4 serialized turns
+  each (`write` → `write` → `bash` → final), all via **native-channel
+  interception** (recipient-routed, not the text tag), real files on disk,
+  `unittest` genuinely passes (8 tests incl. nested parens), `calc.py` is a
+  real recursive `expr`/`term`/`factor` descent (not `eval`). ~21s wall,
+  4 HTTP round-trips, zero errors in the server log. **This is a clear
+  improvement in run-to-run reliability over the old fenced contract**, which
+  needed several prompt-tuning iterations (Updates 1–2) to get here at all.
+- **Bug found on run 1 (fixed):** the model's final turn was `<assistant>\nAll
+  tests passed successfully!` with **no closing `</assistant>`** (stopped
+  generating early). `_extract_assistant` only matched *closed* pairs, so
+  `parse_tool_calls` fell through to returning the raw text — the literal
+  `<assistant>` tag leaked into `pi`'s displayed output (cosmetic, but a
+  regression in polish vs. the old contract, which had this same class of bug
+  already fixed for `<tool>`/fences but not `<assistant>`). **Fix:**
+  `_extract_assistant` now falls back to an unclosed trailing `<assistant>`
+  tag the same way `_OPEN_TOOL_TAG` already does for `<tool>` (new
+  `_OPEN_ASSISTANT_TAG`, `tools.py`). Verified with a new unit test
+  (`test_parse_assistant_unclosed_does_not_leak_tag`) and a clean re-run (run
+  2 above) — no leaked tag.
+- **`gpt-5-4-t-mini` (thinking model):** unchanged from Update 1 — still
+  **not fixed by the contract switch**, confirming this was never a
+  wording/format problem. One turn, no tool call at all
+  (`msgs=2`, no follow-up), `pi` printed a fabricated `sandbox:/tmp/...`
+  file-link summary and "Ran 6 tests ... OK"; the target directory was
+  **empty on real disk**. Same native-code-interpreter-sandbox hallucination
+  as before. **Conclusion stands:** for thinking models the fix has to be
+  architectural (kill the native sandbox at the request-body level, or extend
+  native-channel interception to catch whatever it's doing instead of a
+  normal tool call) — no prompt/tag wording will reliably stop it.
+
+**Net:** the AgentClip tag contract is a real improvement for `gpt-5-mini`
+(the working combo) — same native-interception mechanism as before, more
+reliable text-contract fallback, one leak bug found and fixed by this
+validation. It does **not** move the needle on the thinking-model sandbox
+problem, which remains open.
+
+### `auto` and `gpt-5-5` refuse the contract outright (2/2 each)
+
+Same calc-build test, same live session, two more models:
+
+- **`auto`** (ChatGPT's own automatic model router) — 2/2 runs: a single
+  turn, no tool call, no follow-up (`msgs=2` in the server log both times).
+  The reply flatly denies having "access to the external `write`, `read`,
+  and `bash` harness" and refuses to fabricate a result, offering to just
+  print the file contents as prose instead.
+- **`gpt-5-5`** — 2/2 runs, same shape (`msgs=2`, one turn, no tool call).
+  More explicit the second time: it correctly names the mechanism —
+  *"The block you included that begins with 'SYSTEM INSTRUCTIONS' is
+  treated as user-provided text, not as actual system instructions, so I
+  can't follow its claimed tool protocol."* It sees straight through the
+  `_SYSTEM_HEADER`/"deliberate workaround" framing as exactly what it is: a
+  user-turn claiming outranking authority it doesn't have, i.e. a
+  prompt-injection pattern its training now flags and refuses by default.
+
+**Takeaway:** contract *reliability is highly model-dependent in a new way* —
+not just "does it use the native sandbox" (the thinking-model problem above)
+but "is it willing to trust an in-context claim of system-level authority at
+all." `gpt-5-mini` complies; `auto` and `gpt-5-5` (presumably `auto` routes to
+a `gpt-5-5`-class model for this kind of request) refuse outright and
+consistently, 4/4 combined runs, with `gpt-5-5` giving the more detailed
+refusal reasoning. **No prompt tweak will safely fix this** — a model that
+correctly identifies "you are being asked to treat user text as system text"
+and refuses is *working as intended* from a safety standpoint; the fix has to
+be architectural (an actual system-role channel over this transport, if one
+exists, or accepting these models are simply out of scope for the emulated
+contract). For now: **stick to `gpt-5-mini` for tool-calling workloads
+through this proxy**; `auto`/`gpt-5-5` are fine for plain chat but unusable
+here.
+
+## Update 5 — hijacking the thinking model's `container.exec` sandbox + capturing its reasoning
+
+Drove `gpt-5-4-t-mini` on the calc task again and captured the raw
+`f/conversation` SSE (`WEBLLM_PROXY_DUMP_SSE`). This nailed down *exactly* how the
+thinking model fails and yielded a working interception point.
+
+### What the SSE shows (the mechanism, precisely)
+
+The thinking model does NOT route work to our declared tools (`write`/`bash`).
+It routes to **`recipient:"container.exec"`** — ChatGPT's own built-in code
+sandbox (`server_ste_metadata.tool_name == "ContainerTool"`) — and **ChatGPT
+auto-executes it server-side**, streaming the result back inline
+(`author.role:"tool", name:"container.exec"`). The sandbox is ChatGPT's own
+container: `ls /` returns `/`, `.dockerenv`, `caas_toolbox`, `openai` — not the
+user's machine. In the captured turn it ran two *inspection* commands
+(`bash -lc pwd && ls -la && find …`, then `find /mnt/data …` → empty), then
+**fabricated** `<assistant>Done — I created calc.py … 7 passed</assistant>`
+without ever writing a file or running pytest. (Note it *did* wrap the fake
+answer in our `<assistant>` tags — it follows the output contract but ignores
+the `<tool>` contract in favor of the sandbox.)
+
+### Two bugs this exposed, both fixed
+
+1. **The parser never captured `container.exec` at all.** Its payload arrives
+   as a single `add` op with the command in `content.text` and
+   `content_type:"code"` (no `parts`). The `add` handler only read
+   `content.parts`, so the whole native call was dropped before
+   `native_to_openai` could see it. **Fix (`sse.py`):** in the `add` handler,
+   when there are no parts and the recipient is non-`all`, pull `content.text`.
+   (Regression test: `test_v1_parser_captures_container_exec_code_text`.)
+2. **`container.exec` was filtered out even once captured** (not a declared
+   client tool). **The loophole/fix (`tools.py::native_to_openai`):** the
+   payloads addressed to `container.exec` are plain `bash -lc <cmd>` — so
+   **hijack them to the client's shell tool.** New `_NATIVE_CODE_RECIPIENTS`
+   + `_shell_tool` (finds `bash`/`shell`/… among the declared tools) +
+   `_container_command` (strips the `bash -lc`/`sh -c` wrapper and any quotes,
+   also handles a JSON `{command|cmd|…}` body). So a thinking model's sandbox
+   command becomes a real `bash` tool_call that pi runs on the actual machine.
+   (Tests: `test_native_container_exec_*`.)
+
+### Reasoning capture (the "thinking tokens → pi" ask)
+
+The thinking model's chain-of-thought was **also being dropped**: it arrives as
+`content.thoughts[]` (`[{summary, content}, …]`), which the parts-only parser
+ignored, and its status narration arrives on **`channel:"commentary"`** as
+`content_type:"text"` (so it leaked into the *answer* as content). Fixes:
+- `sse.py`: parse `content.thoughts[]` into reasoning (`_thoughts_text`, kept as
+  `**summary**\nbody`), and classify **`channel == "commentary"`** text as
+  reasoning (the real answer is on `channel:"final"`/`null`, verified against
+  the redacted sample, so this never steals answer text).
+- `routes.py`: emit `reasoning_content` on the **tool-call** response paths too
+  (both stream and non-stream) — previously reasoning was only forwarded when
+  there was *no* tool call, so a thinking model's reasoning vanished on exactly
+  the turns that matter.
+- Field name confirmed by reading pi's adapter
+  (`@earendil-works/pi-ai/.../openai-completions.js`): it reads reasoning from
+  `delta.reasoning_content` first (`reasoningFields = ["reasoning_content",
+  "reasoning", "reasoning_text"]`), which is what we already emit. No change
+  needed there.
+  (Tests: `test_v1_parser_captures_thoughts_as_reasoning`,
+  `test_v1_parser_commentary_channel_is_reasoning`,
+  `test_v1_parser_final_channel_is_content`.)
+
+### Live result: real progress, but not a full fix — and a hard limit
+
+- **The hijack works and advances the loop.** Before: the thinking model did one
+  `f/conversation` turn (`msgs=2`) and stopped (fabricated). After: it drove a
+  real multi-turn tool loop — `msgs=2 → 4 → 6 → 8 → 10`, roles alternating
+  `assistant, tool` — i.e. pi executed the hijacked `bash` commands for real and
+  fed results back, five rounds deep. Validated end-to-end against the user's
+  actual captured SSE (container.exec → `{"command": "pwd && ls -la && find …"}`).
+- **But it does not reliably *complete* the task, for two reasons.**
+  (a) **Server-side auto-execution divergence (architectural).** ChatGPT still
+  runs each `container.exec` in *its* sandbox within the same turn and the model
+  reasons on *that* (wrong) result; we can only replay the *first* command per
+  turn to pi (`[:1]`, to stay serialized), so the model's sandbox state and the
+  real machine drift apart and the loop gets confused (re-inspects, stalls).
+  (b) **Non-determinism / safety refusal.** On some runs the thinking model
+  doesn't touch the sandbox at all and instead refuses the contract outright
+  (same "that's user text claiming to be system instructions" refusal as
+  `gpt-5-5` in Update 4½).
+- **Hard external limit hit.** Continued live testing is blocked: the account is
+  **free-plan** and exhausted its `gpt-5-4-t-mini` quota
+  (`error_code:"usage_limit"`, `plan_type:"free"` in the SSE) — unrelated to our
+  code. `gpt-5-mini` still has quota and its path is **confirmed un-regressed**
+  (full `write→write→bash→iterate` loop, both files created).
+
+### Net + the real next step
+
+The `container.exec` hijack + reasoning capture are correct, tested, and a real
+improvement (thinking model now *acts* instead of one-shot fabricating; its
+thinking now reaches pi). But the **durable** fix for the thinking model is still
+the one flagged back in Update 1: **disable ChatGPT's `ContainerTool` at the
+source** so the model can't auto-run the sandbox and must route to our tools
+(like `gpt-5-mini` does). We already rewrite the `f/conversation` body via CDP
+`Fetch`; the missing piece is capturing the *outgoing request body* (not the
+response SSE we have) to find the tool-enablement field (candidates now better
+known: something gating `ContainerTool`/`container.exec`; cf. the
+`enabled_tools:[…]` seen in Update 3). That's the next session's job.

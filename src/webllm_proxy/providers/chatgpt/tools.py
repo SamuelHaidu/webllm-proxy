@@ -28,6 +28,7 @@ import uuid
 _TOOL_TAG = re.compile(r"<tool>\s*(.*?)</tool>", re.S | re.I)
 _OPEN_TOOL_TAG = re.compile(r"<tool>\s*(.*)\Z", re.S | re.I)     # unclosed <tool>
 _ASSISTANT_TAG = re.compile(r"<assistant>\s*(.*?)</assistant>", re.S | re.I)
+_OPEN_ASSISTANT_TAG = re.compile(r"<assistant>\s*(.*)\Z", re.S | re.I)  # unclosed <assistant>
 
 # Legacy fallback: a ```tool_call fenced JSON block (closed / unclosed / any).
 _FENCE = re.compile(r"```[ \t]*tool_call[ \t]*\r?\n?(.*?)```", re.S | re.I)
@@ -321,6 +322,55 @@ def tool_names(tools):
     return out
 
 
+# ChatGPT's OWN native code sandbox. Thinking models (e.g. gpt-5-4-t-mini) route
+# real shell work to the `container.exec` recipient — a `bash -lc <cmd>` executor
+# that ChatGPT auto-runs in ITS container (`/`, `.dockerenv`, `caas_toolbox`, ...),
+# NOT the user's machine — then hallucinate results. We hijack those calls to a
+# client-declared shell tool so the command runs for real (see
+# docs/discovery/2026-07-10-tool-calling.md Update 5).
+_NATIVE_CODE_RECIPIENTS = {"container.exec", "container_exec", "python_exec"}
+# Client tool names (in preference order) we treat as "the shell" to hijack to.
+_SHELL_TOOL_NAMES = ("bash", "shell", "sh", "run_bash", "run_command", "run_shell",
+                     "runbash", "run_terminal_cmd", "execute", "exec", "terminal", "run")
+# Strip a leading `bash -lc` / `sh -c` / ... wrapper off a container.exec payload.
+_SHELL_WRAPPER = re.compile(r"^\s*(?:bash|sh|zsh|/bin/bash|/bin/sh)\s+-l?c\s+", re.I)
+
+
+def _shell_tool(allowed_names):
+    """First client-declared tool that looks like a shell, or None."""
+    if not allowed_names:
+        return None
+    for cand in _SHELL_TOOL_NAMES:
+        if cand in allowed_names:
+            return cand
+    return None
+
+
+def _container_command(raw):
+    """Extract the shell command from a `container.exec` payload. The captured
+    text is usually `bash -lc <command>` (sometimes the command is quoted, or the
+    payload is a JSON object/array); return the bare command string."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    # JSON shapes: {"cmd": [...]}/{"command": "..."} or a bare ["bash","-lc","..."]
+    j = _load(s) or _salvage_call_json(s)
+    if isinstance(j, dict):
+        c = j.get("command") or j.get("cmd") or j.get("bash") or j.get("script")
+        if isinstance(c, list):
+            c = c[-1] if c else ""
+        if isinstance(c, str) and c.strip():
+            s = c.strip()
+    elif isinstance(j, list) and j:
+        s = str(j[-1]).strip()
+    m = _SHELL_WRAPPER.match(s)
+    if m:
+        s = s[m.end():].strip()
+        if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
+            s = s[1:-1]
+    return s.strip()
+
+
 def native_to_openai(native, allowed_names=None):
     """Convert native-channel tool-call captures (from the SSE: each a dict
     {"name": recipient, "arguments": raw-JSON-text}) into OpenAI tool_calls,
@@ -331,11 +381,21 @@ def native_to_openai(native, allowed_names=None):
     text is that tool's arguments; when it isn't (e.g. the model routed to a
     recipient it named `tool_call`/`functions`), the text may itself be a
     contract-shaped call, which we normalize and re-filter. JSON is parsed
-    leniently (salvage) to tolerate a slightly-truncated stream."""
+    leniently (salvage) to tolerate a slightly-truncated stream.
+
+    Special case: `container.exec` (ChatGPT's own code sandbox) is hijacked to a
+    client-declared shell tool so a thinking model's sandbox commands run on the
+    real machine instead of being dropped."""
     simple = []  # [{"name", "arguments"(dict)}]
     for nc in (native or []):
         name = nc.get("name")
         raw = nc.get("arguments") or ""
+        if name in _NATIVE_CODE_RECIPIENTS:
+            shell = _shell_tool(allowed_names)
+            cmd = _container_command(raw)
+            if shell and cmd:
+                simple.append({"name": shell, "arguments": {"command": cmd}})
+            continue
         if name and (allowed_names is None or name in allowed_names):
             args = _load(raw)
             if not isinstance(args, dict):
@@ -360,10 +420,17 @@ def native_to_openai(native, allowed_names=None):
 
 
 def _extract_assistant(text):
-    """Joined text of any `<assistant>` blocks, or None if there are none."""
+    """Joined text of any `<assistant>` blocks, or None if there are none. Falls
+    back to a trailing UNCLOSED `<assistant>` (the model stopped generating
+    before writing the closing tag, e.g. hit its token limit) so the literal
+    tag never leaks into the visible reply."""
     blocks = _ASSISTANT_TAG.findall(text)
     if blocks:
         return "\n".join(b.strip() for b in blocks).strip()
+    if "</assistant>" not in text:
+        m = _OPEN_ASSISTANT_TAG.search(text)
+        if m:
+            return m.group(1).strip()
     return None
 
 
