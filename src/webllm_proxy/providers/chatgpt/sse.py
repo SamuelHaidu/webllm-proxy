@@ -227,10 +227,14 @@ class V1DeltaParser:
 
 class StreamAccumulator:
     """Buffers raw stream text (which may split mid-line) and yields parser
-    events line by line."""
+    events line by line. Satisfies the core's `Accumulator` interface."""
     def __init__(self):
         self.parser = V1DeltaParser()
         self._buf = ""
+
+    @property
+    def finish_reason(self):
+        return self.parser.finish_reason or "stop"
 
     def feed(self, chunk):
         events = []

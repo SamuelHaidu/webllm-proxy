@@ -1,9 +1,7 @@
-"""OpenAI-compatible HTTP surface.
+"""OpenAI-compatible HTTP surface for the ChatGPT provider.
 
-Endpoints:
-  GET  /health
   GET  /v1/models              -> real ChatGPT slugs (no aliasing)
-  POST /v1/chat/completions    -> stream or non-stream
+  POST /v1/chat/completions    -> stream or non-stream (+ emulated tools)
 
 Stateful: maps the stateless OpenAI `messages[]` onto ONE ongoing ChatGPT
 conversation and sends only the newest user message (a fresh/diverging history
@@ -14,15 +12,23 @@ import logging
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 
-from flask import Flask, Response, jsonify, request
-from flask_cors import CORS
+from flask import Response, jsonify, request
 
 from . import config
 from . import tools as tools_mod
-from .browser import BrowserSession
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class ChatGptTurn:
+    """Browser-worker job payload for the ChatGPT provider."""
+    message: str
+    model: str | None
+    new_conversation: bool
+    effort: str | None = None
 
 
 def _msg_text(m) -> str:
@@ -50,7 +56,6 @@ def _norm_model(model):
 
 # OpenAI `reasoning_effort` (minimal/low/medium/high, plus 5.1's `none`) maps
 # onto ChatGPT web's 4-level `thinking_effort` ladder (min/standard/extended/max).
-# Raw web values are accepted too, so a client can target them directly.
 _EFFORT_MAP = {
     "minimal": "min", "min": "min", "none": "min",
     "low": "standard", "standard": "standard",
@@ -60,9 +65,6 @@ _EFFORT_MAP = {
 
 
 def _norm_effort(body):
-    """Extract reasoning_effort (Chat Completions) or reasoning.effort
-    (Responses-style) from a request body and map it to a web thinking_effort,
-    or None. The browser layer still gates on model support."""
     v = body.get("reasoning_effort")
     if not v:
         r = body.get("reasoning")
@@ -72,9 +74,12 @@ def _norm_effort(body):
     return _EFFORT_MAP.get(str(v).strip().lower())
 
 
-def create_app(session: BrowserSession) -> Flask:
-    app = Flask(__name__)
-    CORS(app)
+def _model_slug(session):
+    parser = getattr(session.last_acc, "parser", None)
+    return getattr(parser, "model_slug", None) if parser else None
+
+
+def register(app, session, provider):
     lock = threading.Lock()   # serialize turns (single browser)
     state = {"sigs": []}      # signature of the messages[] already accounted for
 
@@ -87,9 +92,6 @@ def create_app(session: BrowserSession) -> Flask:
         return (role, _msg_text(m))
 
     def _format_turns(msgs, name_map):
-        """Render the user/tool messages of a slice as text for ChatGPT
-        (assistant/system messages are ChatGPT's own output or go in the
-        preamble, so they are not echoed back)."""
         out = []
         for m in msgs:
             role = m.get("role")
@@ -100,10 +102,6 @@ def create_app(session: BrowserSession) -> Flask:
         return "\n\n".join(t for t in out if t).strip()
 
     def plan_turn(messages, tools, tool_choice, forced_name):
-        """Map stateless messages[] onto the stateful ChatGPT conversation.
-        Continuation = the prior signature is a prefix of this one (send only
-        what's new); otherwise start a fresh ChatGPT conversation.
-        Returns (text_to_send, new_conversation)."""
         sigs = [_sig(m) for m in messages]
         prev = state["sigs"]
         cont = bool(prev) and len(sigs) > len(prev) and sigs[:len(prev)] == prev
@@ -111,7 +109,6 @@ def create_app(session: BrowserSession) -> Flask:
         name_map = tools_mod.tool_name_map(messages)
         if cont:
             return _format_turns(messages[len(prev):], name_map) or None, False
-        # new conversation: preamble (system + tool contract) + the newest turn(s)
         system_text = "\n\n".join(_msg_text(m) for m in messages if m.get("role") == "system")
         preamble = tools_mod.build_preamble(system_text, tools, tool_choice, forced_name)
         last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=None)
@@ -131,18 +128,11 @@ def create_app(session: BrowserSession) -> Flask:
             "model": model, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
         }) + "\n\n"
 
-    @app.get("/health")
-    def health():
-        return jsonify({
-            "status": "running" if session.ready else "initializing",
-            "ready": session.ready, "error": session.error,
-        }), (200 if session.ready else 503)
-
     @app.get("/v1/models")
     def models():
         if not session.ready:
             return jsonify({"error": {"message": "session initializing"}}), 503
-        data = session.list_models()
+        data = provider.list_models(session)
         if isinstance(data, dict) and data.get("error"):
             return jsonify({"error": {"message": data["error"]}}), 502
         out = [{
@@ -196,14 +186,12 @@ def create_app(session: BrowserSession) -> Flask:
 
         lock.acquire()
         try:
-            out_q = session.submit(text, req_model, new_conv, effort)
+            out_q = session.submit(ChatGptTurn(text, req_model, new_conv, effort))
         except Exception as e:
             lock.release()
             return jsonify({"error": {"message": str(e)}}), 500
 
         if tools_active:
-            # Tool calls can't be recognized until the reply is complete, so
-            # buffer the whole turn, then emit either tool_calls or content.
             content, reasoning, finish, err = "", "", "stop", None
             native = []
             try:
@@ -226,14 +214,11 @@ def create_app(session: BrowserSession) -> Flask:
                 lock.release()
             if err and not content and not native:
                 return jsonify({"error": {"message": err, "type": "upstream_error"}}), 502
-            # Prefer tool calls the model made through ChatGPT's native channel
-            # (recipient == tool name); fall back to the text `tool_call` contract.
-            # Take the first native call only, to keep execution serialized.
             calls = tools_mod.native_to_openai(native, tools_mod.tool_names(tools))[:1]
             leftover = ""
             if not calls:
                 calls, leftover = tools_mod.parse_tool_calls(content)
-            resp_model_out = session.model_slug_last or resp_model
+            resp_model_out = _model_slug(session) or resp_model
             if calls:
                 if stream:
                     def gen_tc():
@@ -257,7 +242,6 @@ def create_app(session: BrowserSession) -> Flask:
                                              "content": leftover or None, "tool_calls": calls}}],
                     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                 })
-            # no tool call -> ordinary answer (delivered buffered)
             if stream:
                 def gen_txt():
                     yield chunk(cid, created, resp_model, {"role": "assistant"})
@@ -327,11 +311,9 @@ def create_app(session: BrowserSession) -> Flask:
                 msg["reasoning_content"] = reasoning
             return jsonify({
                 "id": cid, "object": "chat.completion", "created": created,
-                "model": session.model_slug_last or resp_model,
+                "model": _model_slug(session) or resp_model,
                 "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             })
         finally:
             lock.release()
-
-    return app

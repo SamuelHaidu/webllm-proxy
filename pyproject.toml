@@ -1,21 +1,21 @@
 [project]
-name = "chatgpt-web-proxy"
+name = "webllm-proxy"
 dynamic = ["version"]
-description = "OpenAI-compatible local proxy over the ChatGPT web app, driven through a stealth browser (CloakBrowser)."
+description = "Browser-backed local API bridges over login-only web LLMs (ChatGPT web, Databricks Genie/llmproxy), driven through a stealth browser (CloakBrowser)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["chatgpt", "openai", "proxy", "api", "cloakbrowser", "coding-agent"]
+keywords = ["chatgpt", "databricks", "anthropic", "openai", "proxy", "api", "cloakbrowser", "coding-agent"]
 dependencies = [
     # Browser layer: stealth Chromium that passes Cloudflare Turnstile.
-    # The ~200MB browser binary auto-downloads on first run (or `chatgpt-proxy install`).
+    # The ~200MB browser binary auto-downloads on first run (or `webllm-proxy install`).
     "cloakbrowser>=0.4.10",
     "flask>=3.0",
     "flask-cors>=6.0",
 ]
 
 [project.scripts]
-chatgpt-proxy = "chatgpt_proxy.__main__:main"
+webllm-proxy = "webllm_proxy.__main__:main"
 
 [project.urls]
 Documentation = "https://github.com/CloakHQ/CloakBrowser"
@@ -25,10 +25,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "src/chatgpt_proxy/_version.py"
+path = "src/webllm_proxy/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/chatgpt_proxy"]
+packages = ["src/webllm_proxy"]
 
 [dependency-groups]
 dev = []
