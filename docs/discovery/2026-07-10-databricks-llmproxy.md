@@ -253,6 +253,63 @@ entitlements — a possible way to reach the disabled Claude/Gemini/Llama models
 This edges into entitlement circumvention; leaving it as an observation pending
 a decision.
 
+**Re-verified live (later session), through the shipped provider's
+`/v1/messages`:** probed ~20 registrations — **only `claude-4-5-sonnet` /
+`claude-sonnet-4-5` return `200`** (→ `claude-sonnet-4-5-20250929`); every other
+name (`claude-4-5-haiku/-opus`, `claude-4-sonnet`, `claude-3-7-sonnet`,
+`claude-4-1-opus`, `gemini-2-5-pro`, `llama-3-3-70b/-3-1-405b`, dbrx, the full
+dated `claude-sonnet-4-5-20250929`, `databricks-…` prefixes) returns `400`/`404`
+with an **empty body** — the descriptive `MODEL_DISABLED`/`NOT_FOUND` text the
+direct probes saw is swallowed by our CDP passthrough on error, so through the
+proxy you can only tell WORKS vs not, not why. Net: **the enabled Anthropic-path
+set is unchanged — Claude Sonnet 4.5 only.** The two GPT-4.1 Azure deployments
+remain reachable only via the un-exposed `proxy/chat/completions` endpoint.
+(Minor UX gap spotted: the provider returns a bare empty-body `400`/`404` for a
+bad/disabled model instead of a JSON Anthropic error — worth surfacing a real
+`{"type":"error", ...}` so clients get a reason.)
+
+## How to find out what models work (runbook)
+
+There's **no list endpoint**; the registry is mapped by *trial + error-message
+taxonomy*. Reusable tool: **`scripts/dbx_models_probe.py`** (secret-safe: prints
+only status + verdict, never tokens). It boots the databricks profile headless
+and does a **direct in-page fetch** per candidate model on each channel —
+crucially reading `response.text()`, which surfaces the descriptive
+`MODEL_DISABLED`/`NOT_FOUND` reason that the proxy's CDP passthrough swallows.
+
+Steps:
+
+1. **Log in once** if you haven't: `webllm-proxy login --provider databricks`
+   (needs `DATABRICKS_PROXY_URL="https://<ws>.cloud.databricks.com/?o=<org>"`).
+2. **Stop any running `serve`** — the profile is single-instance (Chrome lock);
+   the probe can't boot while `serve` holds it. (`pkill -f "webllm-proxy serve"`.)
+3. **Run the probe** (both channels):
+   ```bash
+   DATABRICKS_PROXY_URL="https://<ws>.cloud.databricks.com/?o=<org>" \
+     uv run python scripts/dbx_models_probe.py both
+   ```
+   To test specific/new names: `... dbx_models_probe.py anthropic name1,name2`
+   (or `azure ...`). Extend the built-in `DEFAULT_ANTHROPIC`/`DEFAULT_AZURE`
+   lists in the script as new model families appear.
+4. **Read the verdicts** per channel:
+   - `WORKS ✅` — usable on this login/client **right now**.
+   - `DISABLED` — the registration is **real** but the `clientId` isn't entitled
+     (`MEC`); reachable only if entitlements change or via a different clientId
+     (entitlement-sensitive — see the "loophole" note above).
+   - `NOT_FOUND` — the name/alias doesn't exist; try another spelling.
+5. **Restart `serve`** when done.
+
+**Result on this account (both channels, live):**
+
+| Channel (`llmproxy` sub-path) | WORKS ✅ | DISABLED (registered, gated) | NOT_FOUND |
+|---|---|---|---|
+| `anthropic` (`llmproxy/`, `endpoint: anthropic/v1/messages`) | `claude-4-5-sonnet` = `claude-sonnet-4-5` → `claude-sonnet-4-5-20250929` | `claude-4-5-haiku`, `claude-4-5-opus`, `claude-4-sonnet`, `claude-4-1-opus`, `claude-3-7-sonnet`, `gemini-2-5-pro`, `llama-3-3-70b`, `llama-3-1-405b` | `claude-4-opus`, `claude-3-5-sonnet` |
+| `azure` (`proxy/chat/completions`) | `gpt-41-2025-04-14`, `gpt-41-mini-2025-04-14` (Azure OpenAI; **streaming works** — `stream:true` → OpenAI `data:` chunks) | `gpt-4o-2024-11-20` | `gpt-4o-mini`, `gpt-5`, `o3-mini` |
+
+So the usable set is **Claude Sonnet 4.5** (Anthropic channel) **+ two GPT-4.1
+Azure deployments** (Azure channel). Everything else is either gated for these
+clientIds or not a real registration.
+
 **Build implications:** target `llmproxy` with `model_registration:
 claude-4-5-sonnet`, a minimal `system`, and the client's own `tools`; expose it
 to `pi` as an `anthropic-messages` provider (pi speaks Anthropic natively — no
@@ -300,3 +357,106 @@ issued all calls in one page context):**
 this assistant…") — the channel is scoped to the Databricks editor assistant. A
 strong client system prompt (e.g. a coding-agent prompt from `pi`) overrides
 this. Not a proxy issue; a product-level constraint of the channel.
+**Superseded — see Update below:** the "strong client prompt overrides it" claim
+is wrong for `pi`; `pi`'s prompt *triggers* the scope refusal, and the fix is a
+proxy-injected Genie framing.
+
+## Update — making a real coding agent (`pi`) work end-to-end: two fixes
+
+Drove `pi` (`--tools write,read,bash`) building a recursive-descent calculator
+through the provider. Two blockers, both now fixed in
+`databricks/routes.py::build_llmproxy_body` (+ unit tests in
+`tests/test_databricks_body.py`):
+
+### Fix 1 — `eager_input_streaming` on tools → empty-body `400`
+
+`pi`'s first tool request returned the same **empty-body `400`** as the
+no-`system` case. Bisected the exact request (captured via
+`DATABRICKS_PROXY_DEBUG_DUMP`) field-by-field against a known-good direct call:
+the culprit is **`eager_input_streaming: true`, which `pi` adds to every tool
+object.** It's a client-side Anthropic streaming hint, not a Bedrock tool field,
+and the llmproxy→Bedrock passthrough rejects it. (Ruled out along the way:
+`thinking` is fine — the earlier `400` on it was only because `max_tokens` must
+be **>** `thinking.budget_tokens`, which `pi` satisfies (64000 > 16384);
+`cache_control` on tools/system/message blocks is **accepted**.) **Fix:** strip
+`eager_input_streaming` from tools (denylist `_DROP_TOOL_FIELDS`; caller dict not
+mutated). `max_tokens: 64000` + `thinking` + `cache_control` all pass through.
+
+### Fix 2 — the scope/out-of-context guard, defeated by a Genie framing
+
+With the `400` gone, the model then **refused on scope**: *"This assistant is
+scoped to Databricks-related work"*, and, tellingly, *"the context of this
+session indicates it's reaching the model outside the legitimate Databricks UI
+flow."* So the `editor-assistant-agent-mode` channel has an **out-of-context
+guard**, not just a topic scope. Bisected what trips it:
+
+- It is **not** the task (a trivial `write hello.txt` refuses too) and **not** a
+  short pi-style system prompt (that yields `tool_use`).
+- It **is** `pi`'s **full system prompt** — specifically its "Pi documentation"
+  block listing **local `/home/samuel.haidu/.nvm/...` filesystem paths** and the
+  "operating inside pi, a coding agent harness" identity. Truncating the system
+  prompt to before that block → `tool_use`; removing just that block from the
+  full prompt → `tool_use`. Those external-environment signals are the tell.
+
+**Fix (per the user's steer — "write the system prompt as Genie code and tell it
+to call our tools"):** the provider now **prepends a `_GENIE_SYSTEM` block** that
+frames the session as *Genie, the in-workspace Databricks code agent, in the
+normal agent-mode flow*, and states the request's tools **are** the workspace
+editor's file/shell tools — so use them, never refuse on scope. Verified: with
+this prepended, the **full** pi system prompt (local paths and all) yields
+`tool_use` again, in every prepend/append position tested. It also guarantees the
+non-empty `system` llmproxy requires (replaces the old default block).
+
+**Also prepended: token-efficiency style rules (`_STYLE_SYSTEM`, gated by
+`DATABRICKS_PROXY_STYLE_RULES`, default on).** Adapted from the
+`claude-token-efficient` coding+agents profiles: concise output / thorough
+reasoning, lead with the result or the tool call (no preamble/sycophancy/
+narration), no em-dashes or decorative Unicode, simplest working solution +
+targeted edits, and hallucination guards (never invent paths/APIs/results; say
+unknown instead of guessing). Ordering is `[Genie, style] + caller_system`, and
+the rules are phrased as **defaults the caller's own system prompt overrides**.
+Live-checked: a "how do I discard git changes?" prompt now leads straight with
+`git reset --hard HEAD` — no "Great question!" preamble, no em-dashes.
+
+### Result
+
+`pi` on Databricks/Claude Sonnet 4.5 now completes the calc build cleanly:
+**native `tool_use`** loop (write → write → bash …, 9 tool turns, all `200`),
+real files on disk, **19 unit tests genuinely pass**, `calc.py` a real
+`parse/expr/term/factor` recursion. Unlike the ChatGPT thinking model (whose
+native sandbox has to be hijacked, see the tool-calling doc Update 5), Databricks
+tool calling is **native** — once these two request-shape/scoping issues are
+handled, it "just works" and is the more reliable tool-calling backend.
+
+*(Config note: the workspace URL for `serve`/`login` is account-specific and
+kept out of git; recover it from the databricks-proxy profile's own history if
+lost — host + `?o=<org>` only, never cookies/tokens.)*
+
+## Update — Anthropic `count_tokens` is NOT supported by the llmproxy channel
+
+Question: is Anthropic's `POST /v1/messages/count_tokens` (returns
+`{"input_tokens": N}` without generating) available through Databricks? **No.**
+
+- **Our proxy didn't expose it** (`404`); the backend doesn't either. Probed live
+  by adding a route that sends the llmproxy envelope with
+  `_llmproxy_fields.endpoint = "anthropic/v1/messages/count_tokens"`: the channel
+  returns the **empty-body edge `400`** (the same rejection class as a missing
+  `system`/org-id). Control test isolates the cause to the endpoint itself:
+  **identical body → `200` on `anthropic/v1/messages`, `400` on
+  `.../count_tokens`.** So only `anthropic/v1/messages` is whitelisted for
+  `editor-assistant-agent-mode` (MEC entitlement gating by `(client_id,
+  endpoint)`); count_tokens isn't entitled.
+- **The real Genie editor never calls count_tokens** (not in any HAR — only
+  `anthropic/v1/messages`), consistent with it not being enabled.
+- **`pi` doesn't need it** either: its `anthropic-messages` adapter has no
+  count_tokens call; it tracks tokens from the streamed `usage`
+  (`input_tokens`/`output_tokens` in `message_start`/`message_delta`), which we
+  already pass through unchanged.
+
+**What we shipped:** a `POST /v1/messages/count_tokens` route that **tries the
+backend** (so it returns the real count if the channel is ever entitled) and, on
+the current edge `400`, **falls back to a local ~4-chars/token estimate** so any
+Anthropic-SDK client that calls count_tokens gets a usable `{"input_tokens": N}`
+(HTTP 200) instead of a hard failure. The estimate is approximate and logged as a
+fallback (`_estimate_input_tokens`, unit-tested); it is NOT Anthropic's exact
+tokenizer. Real per-request accounting still comes from response `usage`.

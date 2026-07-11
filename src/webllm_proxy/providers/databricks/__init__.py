@@ -98,4 +98,5 @@ class DatabricksProvider(Provider):
 
     def banner(self, host, port):
         return [f"  GET  http://{host}:{port}/v1/models",
-                f"  POST http://{host}:{port}/v1/messages   (Anthropic Messages)"]
+                f"  POST http://{host}:{port}/v1/messages   (Anthropic Messages)",
+                f"  POST http://{host}:{port}/v1/messages/count_tokens"]
