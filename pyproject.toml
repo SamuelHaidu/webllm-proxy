@@ -12,6 +12,9 @@ dependencies = [
     "cloakbrowser>=0.4.10",
     "flask>=3.0",
     "flask-cors>=6.0",
+    "toolz>=1.0",         # pure-Python functional helpers (pipe/curry/groupby/...)
+    "psutil>=6.0",        # cross-platform process enumeration/termination
+    "platformdirs>=4.0",  # cross-platform per-OS data dir (login profiles)
 ]
 
 [project.scripts]
@@ -25,10 +28,71 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "src/webllm_proxy/_version.py"
+path = "webllm_proxy/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/webllm_proxy"]
+packages = ["webllm_proxy"]
 
 [dependency-groups]
-dev = []
+dev = [
+    "ruff>=0.8",
+    "ty>=0.0.1a1",
+    "pytest>=8.0",
+    "poethepoet>=0.31",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "PTH", "PL", "C90", "RUF"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.pylint]
+max-branches = 10
+max-nested-blocks = 3
+max-args = 6
+
+[tool.ruff.lint.per-file-ignores]
+# Lazy imports here are intentional (CLI startup speed / provider isolation so
+# picking one backend never imports the other's env-reading config, and
+# breaking a real import cycle between a provider's __init__ and http/, which
+# needs both providers' config), not an oversight -- see each module's own
+# top docstring / inline comment.
+"webllm_proxy/cli.py" = ["PLC0415"]
+"webllm_proxy/providers/__init__.py" = ["PLC0415"]
+"webllm_proxy/providers/chatgpt/__init__.py" = ["PLC0415"]
+"webllm_proxy/providers/databricks/__init__.py" = ["PLC0415"]
+# The two Flask route modules for the streaming + tool-calling + single-
+# browser-locking request path. Everything reasonably extractable already
+# moved out (wire/, application/, strategies/, providers/*/llmproxy.py); the
+# remaining branching is inherent to orchestrating one stateful streaming HTTP
+# response over a shared browser turn, not a decomposition opportunity --
+# splitting these further would trade a readable, linear request flow for
+# indirection between functions that all need the same handful of locals.
+"webllm_proxy/http/openai_routes.py" = ["C901", "PLR0911", "PLR0912", "PLR0915", "PLR2004"]
+"webllm_proxy/http/anthropic_routes.py" = ["C901", "PLR0915", "PLR2004"]
+# Magic-number / long-assert-line noise in test literals is normal, not a smell.
+"tests/*" = ["PLR2004", "E501"]
+# One-off reverse-engineering/dev scripts (not shipped, not imported by the
+# package) -- see docs/discovery/. Held to a looser bar than webllm_proxy/.
+"scripts/*" = [
+    "C901", "PLR2004", "PLC0415", "E501", "SIM103", "RET504", "PTH123", "RUF059", "UP015",
+]
+
+[tool.poe.tasks]
+fmt = "ruff format ."
+lint = "ruff check ."
+typecheck = "ty check webllm_proxy"
+test = "pytest -q"
+check = ["fmt", "lint", "typecheck", "test"]
+build = "uv build"
+bundle = "python scripts/build_offline_bundle.py"
+publish = "uv publish"
+release = ["check", "build"]
