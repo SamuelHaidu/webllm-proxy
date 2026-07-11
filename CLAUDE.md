@@ -2,300 +2,121 @@
 
 ## Project intent
 
-Build a local HTTP API proxy that talks to ChatGPT's underlying web backend
-(the network API the chat.openai.com / chatgpt.com frontend itself calls,
-e.g. `backend-api/conversation` and friends) and translates it to an
-OpenAI-API-compatible schema (`/v1/chat/completions` style). Goal: let
-coding agents / tools built against the OpenAI API work for people in
-enterprise environments who have a ChatGPT web login but no official API
-key/budget.
+**`webllm-proxy`** (`src/webllm_proxy/`, a `uv` package) is a local API bridge
+over **login-only web LLMs**, driven through a stealth browser — so coding
+agents / tools built against a standard LLM API work for people who have a web
+login but no official API key/budget. Provider/adapter architecture; two
+providers ship today:
 
-The implementation lives in **`src/webllm_proxy/`** (a `uv` package,
-**`webllm-proxy`**, renamed from `chatgpt-web-proxy` in the 2026-07-10
-unification — see below). Earlier prototypes that drove the web UI by DOM
-scraping — `chatgpt_api_server.py`, `manual_login.py`, a `go-api/` Go/CDP
-port, and a React `frontend/` — were **removed in the 2026-07-10 refactor**
-(full-Python, lean, uv-packaged). The current approach captures the real
-network stream over CDP rather than scraping the DOM.
+- `chatgpt` — chatgpt.com → OpenAI `/v1/chat/completions` (port 5102)
+- `databricks` — Databricks Genie/`llmproxy` → Anthropic `/v1/messages` (port 5103)
 
-**Now multi-backend.** The same idea is generalized to any login-only web LLM
-via a **provider/adapter** architecture. Two providers ship: `chatgpt`
-(chatgpt.com → OpenAI `/v1/chat/completions`) and `databricks` (Databricks
-Genie/`llmproxy` → Anthropic `/v1/messages`). One CLI:
-`webllm-proxy serve|login --provider chatgpt|databricks`.
+CLI: `webllm-proxy serve|login|install --provider chatgpt|databricks`.
 
-### Status & key findings (2026-07-10)
+Started 2026-07-10 as a ChatGPT-only tool (`chatgpt-web-proxy`); unified into
+the current multi-provider shape the same day. Earlier DOM-scraping prototypes
+(`chatgpt_api_server.py`, `manual_login.py`, a Go/CDP port, a React frontend)
+were **removed** in that refactor — don't look for them, they're gone.
 
-- **UNIFIED into `webllm-proxy` + Databricks provider ADDED (2026-07-10).**
-  Refactored the ChatGPT-only package into one tool with a **provider/adapter**
-  architecture (commit "Unify into webllm-proxy…"):
-  - `src/webllm_proxy/core/` = provider-agnostic transport. `browser.py` runs
-    CloakBrowser on one worker thread and captures the chosen response over CDP,
-    feeding raw bytes through a provider **`Accumulator`**; `process.py`
-    (lock/pid hygiene) + `env.py` are shared. Nothing in core is backend-aware.
-  - `providers/base.py` = the **`Provider`** interface (config + browser hooks
-    `authed`/`capture_match`/`trigger`/optional Fetch rewrite; `make_accumulator`;
-    `register_routes`) + `Accumulator`/`PassthroughAccumulator`/`Job`.
-  - `providers/chatgpt/` = the ported ChatGPT backend; `providers/databricks/` =
-    the new one. `tests/` are browser-free (parsers, accumulators, mapping).
-  - Run: `uv sync` then `uv run webllm-proxy serve --provider <name>`
-    (`login`/`install` too). **The CLI/package is `webllm-proxy`, not
-    `chatgpt-proxy`.** Profiles/env keep the old `CHATGPT_PROXY_*` names for
-    back-compat, so existing ChatGPT logins still work.
-- **Databricks provider (2026-07-10)** — see
-  `docs/discovery/2026-07-10-databricks-llmproxy.md`. `POST /v1/messages`
-  (Anthropic Messages, port 5103) is a **near pass-through** to the Genie
-  `POST /ajax-api/2.0/conversation/llmproxy/` channel, which is itself a
-  passthrough to the **native Anthropic Messages API on AWS Bedrock** (Claude
-  Sonnet 4.5, native `tool_use`, extended thinking). Mechanism: wrap the request
-  in the `_llmproxy_fields` envelope (`model`→`model_registration`), issue the
-  fetch **in-page** (cookie auto-attaches, CSRF from `/auth/session/info` stays
-  in the browser), drain the body so `loadingFinished` fires, stream the native
-  SSE straight back (`PassthroughAccumulator`, no translation). **No
-  Turnstile/PoW** — auth is just session cookie + `x-csrf-token` +
-  `x-databricks-org-id`. Requires `DATABRICKS_PROXY_URL` (workspace URL with
-  `?o=`). Validated end-to-end (streaming, native tools, sequential, headless
-  reuse). **Gotchas:** llmproxy rejects a request with **no `system`** (empty
-  `400`) → default injected; pass the **org id from config** (the SPA drops `?o=`
-  after routing). Models are entitlement-gated per `client_id`
-  (`editor-assistant-agent-mode` has `claude-4-5-sonnet`; opus/haiku/gemini/llama
-  registered but disabled). HAR explorer: `scripts/har_explore.py`.
-- **Proxy BUILT + verified** (ChatGPT provider). Port 5102. Working:
-  `/v1/models` (real slugs), `/v1/chat/completions` stream + non-stream, model
-  selection, thinking models, stateful recall. See `README.md` and
-  `docs/discovery/`. Mechanism: type prompt in the browser → capture the
-  `f/conversation` SSE via CDP `Network.streamResourceContent` (a `window.fetch`
-  hook does NOT work) → parse `v1` deltas → OpenAI chunks; model override via
-  CDP `Fetch`.
-- **Tool/function calling DONE (2026-07-10)** — see
-  `docs/discovery/2026-07-10-tool-calling.md`. ChatGPT web has no client-facing
-  function-calling API, so it's **emulated** (`providers/chatgpt/tools.py`).
-  **Contract updated 2026-07-10** to the AgentClip **tag** protocol (adapted from
-  `~/projects/copy-and-paste-agent/agentclip/code/system_prompt.md`), which the
-  web models follow better than fenced blocks: `<assistant>` text +
-  `<tool>{"tool_name":…, …flat args}</tool>`, results fed back as
-  `<tool-response>`. `build_preamble` renders the client's tools in this style
-  (keeping the no-sandbox / real-environment / deliberate-workaround guardrails);
-  `parse_tool_calls` reads `<tool>` blocks (closed + unclosed/salvaged) back into
-  OpenAI `tool_calls`. The legacy fenced ```` ```tool_call ```` forms + bare JSON
-  remain as fallbacks. Original mechanism: inject the prompt contract,
-  parse the model's block back into OpenAI `tool_calls`
-  (`finish_reason:"tool_calls"`), feed `role:"tool"` results back as the next
-  turn. `plan_turn` now signature-diffs the whole `messages[]` (not just user
-  turns) so tool flows continue on one ChatGPT conversation. Contract mandates
-  **one tool call per reply** (proxy is serialized; fixes a parallel
-  read-before-write race). Tool-enabled requests are buffered, not streamed.
-  Also: **native web search** works and its private-use-area citation markers
-  (`…`) are stripped/rendered as markdown (`sse.py::_declutter`);
-  native-tool messages are gated out by `recipient != "all"`. Validated with a
-  direct client and the `pi` agent.
-- **Native-channel tool-call interception DONE (2026-07-10, best path)** — see
-  `docs/discovery/2026-07-10-tool-calling.md` (Update 3). The models often ignore
-  the text contract and call tools through **ChatGPT's own native channel**: an
-  SSE `assistant` message with `recipient` = the tool name and the **args as
-  valid JSON** in the body (`content.text` for `content_type:"code"`, or `parts`
-  for `"text"` — non-deterministic; sometimes recipient is literally
-  `tool_call`). `sse.py` now captures any non-`all` recipient text
-  (`native_calls` → `("tool_call", …)` events); `tools.py::native_to_openai`
-  filters to client-declared tools and converts to OpenAI `tool_calls`;
-  `server.py` prefers the native call over the text fence. Validated by curl:
-  `gpt-5-mini` → real `write`/`bash` tool_calls 5/6. **Model-dependent:**
-  `gpt-5-5-mini` fabricates "ALL TESTS PASSED" without calling tools; the thinking
-  model runs in ChatGPT's sandbox. Debug: `CHATGPT_PROXY_DUMP_SSE=<file>` dumps
-  raw SSE. **Next: still flaky end-to-end for multi-step builds; consider the
-  request-body native-tool disable, and a per-model tool-reliability note.**
-- **Reasoning effort DONE (2026-07-10)** — see
-  `docs/discovery/2026-07-10-thinking-effort.md`. `/backend-api/models` carries
-  per-model `configurable_thinking_effort` + `thinking_efforts`; the
-  `f/conversation` body has a **root `thinking_effort`** on a 4-level ladder
-  `min<standard<extended<max`. OpenAI `reasoning_effort`
-  (`minimal|low|medium|high`, or `reasoning.effort`) maps 1:1 → injected into the
-  request via `_apply_overrides` in the `Fetch.requestPaused` handler, **gated**
-  to models advertising support (boot caches `_effort_support` from the models
-  list). Safe no-op on the dev account (nothing configurable there). Not yet
-  verified against a supporting (enterprise) login. Also seen:
-  `versions[].intelligence_presets` in the models list (unused so far).
-- **Note (env):** the user's shell sets `UV_ENV_FILE=.env`, so `uv run` needs
-  a `.env` in the repo (an empty gitignored one exists).
-- **Browser layer = CloakBrowser** (headless passes Cloudflare Turnstile on
-  chatgpt.com; runs natively here, no Flatpak needed). The login profile lives
-  at **`~/.local/share/chatgpt-proxy/profile`** (moved out of the repo in the
-  refactor; override with `CHATGPT_PROXY_PROFILE`). Headless, no re-login.
-- **Lifecycle (orphan-safe):** `browser.py` clears stale `Singleton*` locks on
-  boot and, on shutdown (SIGTERM/SIGINT), closes the context and kills any
-  profile-scoped Chrome — verified: SIGTERM leaves 0 orphan Chrome procs. If
-  you ever `kill -9` it, just relaunch (boot cleans the stale lock).
-- **Backend send endpoint = `POST /backend-api/f/conversation`** (SSE, `v1`
-  delta encoding). It is gated by a **sentinel** anti-bot flow requiring, per
-  request: `Authorization: Bearer` (from `/api/auth/session`) **plus** three
-  browser-minted tokens — `openai-sentinel-chat-requirements-token`,
-  `openai-sentinel-proof-token` (proof-of-work), and
-  `openai-sentinel-turnstile-token` (**Cloudflare Turnstile**). Full schema +
-  OpenAI mapping: `docs/discovery/2026-07-10-backend-api-capture.md`.
-- **Consequence:** a pure server-side HTTP proxy can't mint the Turnstile
-  token — the proxy must keep a CloakBrowser session in the loop.
-- **Decisions made (2026-07-10), build to these:**
-  1. **Architecture = browser-backed.** The OpenAI-compatible HTTP server
-     wraps a live authenticated CloakBrowser session; the browser mints the
-     sentinel/Turnstile/PoW tokens (trigger a real send + capture the SSE via
-     CDP). Not pure-HTTP, not hybrid (hybrid is a possible later optimization).
-  2. **History = stateful.** Keep a ChatGPT `conversation_id` +
-     `parent_message_id` and send only the newest user message per call
-     (don't replay full history). Bridge OpenAI's stateless `messages[]` onto
-     one persistent ChatGPT conversation.
-  3. **Models = real ChatGPT slugs only.** Expose exactly what
-     `GET /backend-api/models` returns (`gpt-5-3`, `auto`, ...); no aliasing
-     to OpenAI names.
-- **Secrets discipline:** capture files and committed `samples/` are redacted
-  (tokens, cookies, `sessionToken`, email/PII, PoW blobs). Never commit the
-  login profile or raw un-redacted captures; never log `sessionToken` or
-  `accessToken`.
+## Findings index — read this first, every session
 
-### Browser layer: CloakBrowser (decided 2026-07-10)
+**`docs/discovery/README.md` indexes every reverse-engineering finding**, one
+dated entry per topic/session with a one-line summary (newest first). Read it
+before doing any discovery work — it tells you what's already been tried, what
+worked, and what's still open, so you don't redo work or rediscover dead ends.
+**New findings go there** (one file per topic, dated), not in this file.
 
-**The browser layer is CloakBrowser**, a stealth Chromium (C++ source-level
-fingerprint patches) that is a **drop-in Playwright/Puppeteer replacement**
-and auto-downloads its own binary. Reason: plain (Flatpak) Chrome **headless
-is blocked by Cloudflare Turnstile** on chatgpt.com, but **CloakBrowser
-headless passes it** (verified — see `docs/discovery/2026-07-10-cloakbrowser.md`).
-It also runs natively on this flatpak-only machine (no missing libs) and
-matches the existing Playwright-based Python code.
+Quick map of what's covered where:
+- ChatGPT backend API, anti-bot flow, SSE format:
+  `2026-07-10-backend-api-capture.md`, `2026-07-10-v1-proxy.md`,
+  `2026-07-10-browser-backed-validation.md`
+- Tool/function calling, both backends (contract + native-channel
+  interception for chatgpt, native for databricks): `2026-07-10-tool-calling.md`
+- Reasoning effort mapping (OpenAI `reasoning_effort` ↔ web `thinking_effort`):
+  `2026-07-10-thinking-effort.md`
+- Databricks `llmproxy` backend (the whole thing — HAR analysis, live
+  validation, model registry, auth): `2026-07-10-databricks-llmproxy.md`
+- Browser layer choice + setup: `2026-07-10-cloakbrowser.md`,
+  `2026-07-10-setup-and-cloudflare.md`
+- Packaging/refactor history: `2026-07-10-refactor-packaging.md`
 
-- Use `from cloakbrowser import launch, launch_persistent_context`.
-  `launch_persistent_context("./cloak-profile", headless=...)` gives
-  persistent cookies (log in once, reuse headless after).
-- Setup + reproducible commands are in the CloakBrowser discovery doc. Clone
-  lives at `~/projects/CloakBrowser`; a venv there has it installed; the
-  stealth binary is cached at `~/.cloakbrowser/`.
-- The Flatpak-Chrome + `chrome-devtools-mcp` CLI path below is now
-  **secondary/fallback** (kept for ad-hoc interactive inspection — you can
-  attach it to CloakBrowser via `launch(args=["--remote-debugging-port=9242"])`
-  then `chrome-devtools start --browserUrl http://127.0.0.1:9242`). Prefer
-  CloakBrowser/Playwright for anything the project ships.
+## Operational notes (not duplicated in the discovery docs)
 
-### Discovery workflow for this project
+- Shell sets `UV_ENV_FILE=.env`; `uv run` needs a `.env` in the repo (an empty
+  gitignored one exists).
+- **Secrets discipline:** never commit a login profile, a raw un-redacted
+  capture, or a HAR file (`*.har` / `docs/databricks_har/` are gitignored);
+  never log `sessionToken`/`accessToken`/cookies. Redact before committing any
+  sample. `scripts/har_explore.py` is built to help with this (see below).
+- Browser lifecycle is orphan-safe: boot clears stale `Singleton*` locks,
+  shutdown (SIGTERM) closes the context and kills profile-scoped Chrome
+  (verified 0 orphans). `kill -9` is fine too — next boot cleans the lock.
+- Both providers are browser-backed (one CloakBrowser worker thread, see
+  `core/browser.py`) but for different reasons: `chatgpt` needs the browser to
+  mint per-request Turnstile/PoW tokens; `databricks` has no anti-bot check at
+  all (a cookie-only server-side proxy would work) but reuses the same
+  transport for now.
 
-1. **Check existing code/docs first** before re-deriving anything: read
-   `chatgpt_api_server.py`, `manual_login.py`, `go-api/`, and everything
-   under `docs/discovery/` (below) for prior findings.
-2. **Drive a real, authenticated browser session** with **CloakBrowser**
-   (persistent context, log in once) to chatgpt.com, use the UI once logged
-   in, and capture the underlying network traffic (Playwright
-   `page.on("response")` / a CDP `Network`/`Fetch` session for the streaming
-   SSE body; or attach `chrome-devtools-mcp` to the CDP port) — request +
-   response bodies, headers, especially auth headers/cookies/any
-   proof-of-work or device-check tokens — while a real message is sent and
-   streamed back.
-3. **Record every discovery in `docs/discovery/`** as it's found — endpoint
-   URLs, required headers, request/response JSON shapes, streaming format
-   (SSE event structure), auth/session requirements, any anti-automation
-   challenge (e.g. Cloudflare/turnstile, proof-of-work headers like
-   `Openai-Sentinel-*`), and rate-limit behavior. Write these up
-   incrementally, not just at the end — if a session gets interrupted, the
-   next session must be able to pick up from the docs without re-doing the
-   discovery work.
-4. **Document the process itself, not just the result.** When a working
-   pattern is found (e.g. "start browser with real cookies this way", "this
-   header is required or the request 403s", "this is how streaming chunks
-   are framed", "this loophole/workaround got past X restriction"), write
-   it down as its own dated entry so future sessions know both *what works*
-   and *how it was figured out* — avoid rediscovering the same dead ends.
-5. Suggested layout: `docs/discovery/README.md` as an index, plus one file
-   per topic/session (e.g. `docs/discovery/2026-07-10-network-capture.md`).
-   Keep raw captured request/response samples (sanitized of secrets) inline
-   or as small fixture files alongside the notes.
+## Discovery workflow for new backends/features
 
-## Chrome browser automation setup (chrome-devtools-mcp CLI)
+1. Check `docs/discovery/README.md` first — don't re-derive anything already found.
+2. If a HAR capture is available (gitignored, e.g. under `docs/*_har/`),
+   explore it **before** opening a browser: `python scripts/har_explore.py
+   <file> paths|list|show|req|resp|keys|grep`. It parses the whole HAR
+   in-process but only ever prints small, secret-redacted summaries — read the
+   tool's own docstring for the subcommands. This tells you what to expect
+   before spending a live session on it (this is how the Databricks backend
+   was scoped before ever opening a browser).
+3. Drive a real, authenticated browser (CloakBrowser, persistent profile — log
+   in once) to fill in what the HAR/docs don't answer: headers, auth flow,
+   streaming format, anti-bot challenges, rate limits, while a real request is
+   sent and captured.
+4. Record every discovery in `docs/discovery/` **as you go**, not just at the
+   end — one dated file per topic, sanitized samples alongside. Document the
+   *process* (how you figured it out), not just the result, and add the entry
+   to `docs/discovery/README.md`'s index.
 
-This machine has no `claude-in-chrome` MCP tools registered in the session tool
-list (checked and confirmed absent — do not waste time on `ToolSearch` for
-`mcp__claude-in-chrome__*` here). Browser automation must go through the
-**`chrome-devtools-mcp` CLI** (`chrome-devtools <tool>`), documented by the
-`chrome-devtools-mcp` plugin skill. Read that skill's SKILL.md for command
-syntax; this section only covers machine-specific setup that isn't in the
-skill docs.
+## Browser layer: CloakBrowser
 
-### One-time facts about this machine
+Stealth Chromium, drop-in Playwright/Puppeteer replacement, passes Cloudflare
+Turnstile **headless** (plain Flatpak Chrome headless does not). Persistent
+profile per provider (`~/.local/share/{chatgpt,databricks}-proxy/profile`);
+log in once via `webllm-proxy login --provider <name>`, headless after.
+Details/setup: `docs/discovery/2026-07-10-cloakbrowser.md`.
 
-- `chrome-devtools` CLI binary is **not installed by default**. Install with:
-  `npm i -g chrome-devtools-mcp@latest`, then verify with `chrome-devtools status`.
-- There is **no native Chrome/Chromium binary** on this machine (no
-  `/opt/google/chrome/chrome`, no `google-chrome`/`chromium` on PATH).
-- Chrome **is** installed as a **Flatpak**: `com.google.Chrome` (app id).
-  - Do NOT invoke the flatpak's internal binary directly (e.g. the path under
-    `~/.local/share/flatpak/app/com.google.Chrome/.../files/bin/chrome`) — it
-    is a sandbox-internal wrapper script and fails outside the flatpak sandbox
-    (`exec: cobalt: not found`, permission errors writing to `/etc/opt/chrome`).
-  - Always launch it via `flatpak run com.google.Chrome ...args...`.
+## Chrome browser automation for ad-hoc/manual inspection
 
-### Standard workflow: clean/isolated headless instance (default, safe)
+(This is for interactive discovery/debugging sessions — **not** what the
+shipped proxy uses; the proxy drives CloakBrowser directly in Python.)
 
-```bash
-# 1. Launch flatpak Chrome headless with an isolated temp profile + remote debugging port
-flatpak run com.google.Chrome --headless --remote-debugging-port=9333 \
-  --no-sandbox --user-data-dir=/tmp/chrome-profile-<unique> about:blank \
-  > /tmp/chrome_flatpak.log 2>&1 &
-disown
+- This machine has the **`chrome-devtools-mcp` CLI** (`chrome-devtools <tool>`
+  via Bash). Don't assume `mcp__claude-in-chrome__*` tools are callable —
+  check per session (they were not available as callable functions in this
+  project's sessions so far, despite the harness sometimes surfacing their
+  docs). See the `chrome-devtools-mcp:chrome-devtools-cli` skill for full
+  command syntax. Handy for this project: `list_network_requests` /
+  `get_network_request` (quick manual traffic inspection) and
+  `evaluate_script` (ad-hoc in-page `fetch()` probes) as lighter alternatives
+  to a one-off Python/CDP script.
+- No native Chrome binary; Chrome is the `com.google.Chrome` **Flatpak** —
+  launch with `flatpak run com.google.Chrome ...`, never the internal binary
+  path directly (fails outside the sandbox).
+- Standard recipe: headless Flatpak Chrome with an isolated
+  `--user-data-dir=/tmp/...` + `--remote-debugging-port=<port>`, then
+  `chrome-devtools start --browserUrl http://127.0.0.1:<port>`. Clean,
+  cookie-free — the default choice.
+- `chrome-devtools status` can report the daemon "running" while its
+  underlying Chrome process is actually dead — confirm with
+  `curl http://127.0.0.1:<port>/json/version` too, don't trust `status` alone.
 
-# 2. Verify the debugging endpoint is up
-curl -s http://127.0.0.1:9333/json/version
+### The user's real Chrome profile — do NOT copy it
 
-# 3. Point the chrome-devtools-mcp daemon at it
-chrome-devtools start --browserUrl http://127.0.0.1:9333
-chrome-devtools status
-chrome-devtools list_pages
-```
-
-This gives a completely clean session: no cookies, no saved logins, no
-history/extensions from the user's real browsing. This is the **default**
-choice unless the user explicitly asks for their real logged-in session.
-
-To stop: `chrome-devtools stop` then `pkill -f "remote-debugging-port=9333"`.
-
-### The user's real Chrome profile (cookies/logins/history)
-
-The Flatpak Chrome app's real profile (used interactively by the user) lives
-at:
-
-```
-~/.var/app/com.google.Chrome/config/google-chrome/Default/
-```
-
-It contains real `Cookies`, `Login Data`, `History`, etc. (verified present
-and recently modified, i.e. actively used).
-
-**Important restriction found:** Chrome refuses to enable the remote
-debugging port when pointed at its own default user-data-dir path, printing:
-`DevTools remote debugging requires a non-default data directory.` So you
-cannot attach chrome-devtools-mcp directly to
-`~/.var/app/com.google.Chrome/config/google-chrome` in place.
-
-**Security boundary — do NOT copy the real profile to work around this.**
-An attempt to `cp -a` the real profile (including `Cookies`/`Login Data`) into
-`/tmp` was **blocked by the Claude Code auto-mode safety classifier**: copying
-live credential/session files to an unprotected shared location (`/tmp`) is
-treated as unauthorized PII/credential exposure, even when the user has
-approved "use the real profile" in general terms. That approval does not
-imply consent to duplicate credential stores onto disk elsewhere.
-
-**If the user asks to automate with their real logged-in session, do this
-instead of copying the profile:**
-1. Explain the restriction above (remote debugging blocked on default dir;
-   copying credentials elsewhere is not something to do without very explicit,
-   specific authorization for that exact action).
-2. Ask the user directly how they want to proceed. Reasonable options to
-   present:
-   - Attach to an **already-running** real Chrome window that the user starts
-     themselves with remote debugging enabled (e.g. via `chrome://inspect` /
-     `--autoConnect`, requires Chrome 144+), so the real profile's data never
-     leaves its normal location.
-   - Use the clean/isolated instance (above) and have the user manually log
-     into whatever site is needed within that session — this creates fresh,
-     scoped cookies rather than reusing the real profile.
-   - If the user explicitly authorizes copying/duplicating the real profile
-     data to a specific location, treat that as a distinct, narrow permission
-     — do not generalize it to "always copy the profile" for future tasks.
-3. Do not retry the copy-to-`/tmp` approach or attempt alternate ways to
-   dump the same credential files (e.g. symlinking) without the user
-   explicitly re-authorizing that specific action after understanding the
-   risk.
+Real profile: `~/.var/app/com.google.Chrome/config/google-chrome/Default/`
+(live `Cookies`/`Login Data`). Chrome refuses remote debugging on this default
+dir. **Do not copy this profile anywhere (e.g. `/tmp`) to work around that** —
+duplicating live credential files to a shared location is a hard no without
+explicit, specific user authorization for that exact action, even if the user
+approved "use my real profile" in general terms. If the user wants their real
+session automated, ask how: attach to an already-running instance *they*
+start with debugging enabled, or use a clean instance and have them log in
+fresh there.
