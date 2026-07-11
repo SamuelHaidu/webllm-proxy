@@ -21,6 +21,22 @@ tagged **[chatgpt]** or **[databricks]**.
   cookie + `x-csrf-token` (served by `/auth/session/info`) + org-id; NO
   Turnstile/PoW** — so a mostly server-side proxy is feasible and tool-calling
   is native (no emulation). Lists the open questions for the browser phase.
+  **Update: made a real coding agent (`pi`) work end-to-end** — two fixes: (1)
+  strip `eager_input_streaming` from tools (a pi-added field the llmproxy→Bedrock
+  passthrough 400s on), (2) prepend a **Genie-agent system framing** to defeat the
+  `editor-assistant-agent-mode` channel's out-of-context scope guard (pi's system
+  prompt, with local `/home/...` paths, otherwise triggers "scoped to Databricks"
+  refusals). Result: native `tool_use` loop builds the calc + 19 passing tests;
+  Databricks is the more reliable tool-calling backend vs ChatGPT's emulation.
+  Also: **Anthropic `count_tokens` is NOT supported by the llmproxy channel**
+  (edge 400; only `anthropic/v1/messages` is whitelisted; Genie never calls it;
+  `pi` doesn't need it — uses response `usage`). Added a `count_tokens` route
+  that tries the backend then falls back to a local ~4-chars/token estimate.
+  **Model-discovery runbook + `scripts/dbx_models_probe.py`** (trial + error-
+  taxonomy over both channels via direct in-page fetch): usable set on this
+  account = **Claude Sonnet 4.5** (`anthropic` channel) **+ `gpt-41-2025-04-14`
+  / `gpt-41-mini-2025-04-14`** (`azure` `proxy/chat/completions` channel,
+  streaming confirmed); all other names are `DISABLED` (gated) or `NOT_FOUND`.
 - **[chatgpt]** `2026-07-10-thinking-effort.md` — **Reasoning effort.** `/backend-api/models`
   advertises per-model `configurable_thinking_effort` + `thinking_efforts`, and
   the `f/conversation` body carries a root `thinking_effort` on a 4-level ladder
@@ -29,16 +45,28 @@ tagged **[chatgpt]** or **[databricks]**.
   support it, so it's a no-op on accounts that don't). Also noted:
   `versions[].intelligence_presets`.
 - **[chatgpt]** `2026-07-10-tool-calling.md` — **Tool calling, both kinds**
-  (see Update 3 in the file for the native-channel interception that
-  superseded the text-only contract). (1) ChatGPT's
+  (see Update 3 for the native-channel interception that superseded the
+  text-only contract, **Update 4** for the AgentClip tag-contract port + its
+  live `pi` re-validation, and **Update 5** for hijacking the thinking model's
+  `container.exec` sandbox → real `bash` + capturing its reasoning/thinking
+  tokens for pi). (1) ChatGPT's
   **native tools** (web search): routing is by `author.role`+`recipient`+
   `channel` (not content_type), and the answer is polluted with private-use-area
   citation markers (`…`) that we strip / render as markdown links.
   (2) **OpenAI-style function calling**, which the web backend can't do natively,
-  is **emulated** via a `tool_call` prompt contract + parser; stateful planner
-  generalized to signature-diffing so `role:"tool"` results feed back. Validated
-  with a direct client and the `pi` agent; contract mandates one call per reply
-  (fixes a parallel read-before-write race).
+  is **emulated** via a tag prompt contract (`<assistant>`/`<tool>`/
+  `<tool-response>`, ported from AgentClip's `system_prompt.md`) + parser;
+  stateful planner generalized to signature-diffing so `role:"tool"` results
+  feed back. Validated with a direct client and the `pi` agent (recursive-
+  descent calculator build, `gpt-5-mini`: reliable in 2/2 runs after fixing an
+  unclosed-`<assistant>`-tag leak; `gpt-5-4-t-mini`: still hallucinates via
+  ChatGPT's native sandbox, unaffected by the contract — an open,
+  architectural problem, not a wording one; **`auto`/`gpt-5-5`: refuse the
+  contract outright, 4/4 runs** — they correctly identify the injected
+  "SYSTEM INSTRUCTIONS" block as user text and decline to treat it as
+  authoritative, so `gpt-5-mini` is the only reliable tool-calling model for
+  now). Contract mandates one call per reply (fixes a parallel
+  read-before-write race).
 - **[chatgpt]** `2026-07-10-refactor-packaging.md` — Consolidated into a lean
   full-Python `uv` package (`src/chatgpt_proxy/`, dist `chatgpt-web-proxy`);
   removed the Go port, old DOM-scraping scripts, and the frontend; moved the
