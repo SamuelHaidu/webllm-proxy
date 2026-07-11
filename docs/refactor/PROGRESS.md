@@ -19,22 +19,27 @@
 
 _(keep this section current — overwrite, don't append)_
 
-- **Current phase:** Phase C nearly done. Only `uv run poe release`'s build
-  verification is left.
-- **Last completed step:** README.md rewritten: fixed stale `src/webllm_proxy`
-  / `tools.py` references from before the refactor, added a "Research tool"
-  section (REST examples + CLI), a full "Corporate / air-gapped install"
-  section (the 3 options: internal mirror, pre-staged binary, offline
-  bundle), an "Architecture map" replacing the old "Layout" section (matches
-  the actual flat `webllm_proxy/` tree), a "Development" section
-  (`uv run poe check`/`release`), and filled in the Configuration section's
-  gaps (several `DATABRICKS_PROXY_*` env vars and `WEBLLM_PROXY_DUMP_DIR`
-  existed in code but were never documented — unrelated to this refactor,
-  fixed while already touching this section). `uv run poe check` still green
-  (64 tests) after all edits.
-- **Next step:** `uv run poe release` (`check` + `uv build`) as the final
-  Phase C item and closing verification of the whole effort — **build only,
-  do NOT run `uv publish`**, publishing was never authorized.
+- **Current phase:** ALL PHASES DONE (0, A, B, C). The plan at
+  `/home/samuel.haidu/.claude/plans/utility-research-tool-tingly-journal.md`
+  is fully implemented and verified.
+- **Last completed step:** `uv run poe release` — green end to end: fmt/lint
+  (ruff)/typecheck (ty)/test (64 passed), then `uv build` produced both
+  `dist/webllm_proxy-0.2.0.tar.gz` and `dist/webllm_proxy-0.2.0-py3-none-any.whl`
+  cleanly (`dist/` is gitignored, nothing to commit there). **Did not run
+  `uv publish`** — publishing was never requested/authorized, and `release`'s
+  own poe-task definition deliberately excludes it (`release = ["check",
+  "build"]`; `publish` is a separate, manual-only task).
+- **Next step (if anyone continues this work):** nothing required by the
+  plan is outstanding. Two carried-over, non-blocking loose ends, both
+  pre-existing and unrelated to this refactor:
+  1. The databricks profile's browser session is logged out (needs a headed
+     `webllm-proxy login --provider databricks` to re-verify databricks live
+     end-to-end — not done in this effort, see Blocking issues below).
+  2. Two stash entries from mid-refactor commit-splitting are still in
+     `git stash list` (`wip: phase B/C ...`, `wip: phase C ...`) — fully
+     redundant/superseded, safe to `git stash clear` whenever convenient.
+  Otherwise: pick up new work directly from the plan's already-completed
+  state, or start a fresh feature on top of the finished architecture.
 - **Blocking issues:** none. (Non-blocking: the databricks profile's session
   is logged out — pre-existing, unrelated to this refactor; needs
   `webllm-proxy login --provider databricks` headed, not attempted here since
@@ -71,16 +76,28 @@ _(keep this section current — overwrite, don't append)_
 - [x] B5 Application (`application/research.py`, `ResearchScheduler`)
 - [x] B6 REST API (`http/research_routes.py`) + CLI `research` subcommand — **live-verified**
 
-### Phase C — Discovery, docs, release
+### Phase C — Discovery, docs, release ✅ DONE
 - [x] Deep-research discovery session + doc (scoping note, not a live trigger
       capture — see Phase B Findings; `docs/discovery/2026-07-11-deep-research-scoping.md`)
 - [x] `scripts/build_offline_bundle.py` + `install_offline.{sh,ps1}` — live-verified
 - [x] README: corporate install + architecture map
-- [ ] `uv run poe release`
+- [x] `uv run poe release` — check green + `uv build` produced sdist + wheel
 
 ## Findings / deviations from plan
 
 _(dated, newest first — append, don't rewrite history)_
+
+- **2026-07-11 — Plan complete.** `uv run poe release` (check + `uv build`)
+  is green: ruff format/lint clean, `ty check webllm_proxy` clean, 64 tests
+  passed, both `dist/webllm_proxy-0.2.0.tar.gz` and the wheel built
+  successfully. Every checklist item in every phase (0, A, B, C) above is
+  `[x]`. `uv publish` was deliberately not run (never authorized; not part
+  of the `release` poe task by design). This is the closing entry for the
+  modularization + research-tool + hardening effort described in
+  `/home/samuel.haidu/.claude/plans/utility-research-tool-tingly-journal.md`;
+  see the two non-blocking loose ends noted in "Where to resume" for
+  whoever picks this up next (stale databricks login session; two
+  redundant `git stash` entries safe to clear).
 
 - **2026-07-11 — `scripts/build_offline_bundle.py`: two real bugs, both only
   visible by actually running the script, not by reading it:**
