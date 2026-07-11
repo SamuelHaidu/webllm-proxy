@@ -19,16 +19,20 @@
 
 _(keep this section current — overwrite, don't append)_
 
-- **Current phase:** Phase B complete and verified. Starting Phase C (discovery, docs, release).
-- **Last completed step:** Phase B gate passed: `uv run poe check` green (64 tests);
-  the full research pipeline live-verified end-to-end via the actual CLI
-  (`webllm-proxy research "<query>"` → real ChatGPT web search → structured
-  markdown report in ~10s) plus the REST API directly (list/get/delete,
-  404s, 400 validation).
-- **Next step:** Phase C — a *lightweight* Deep Research availability check
-  (not a full trigger-discovery session; see Findings for why), then
-  `scripts/build_offline_bundle.py` + install scripts, README updates,
-  `uv run poe release` (build only, no publish).
+- **Current phase:** Phase C in progress. Deep-research scoping doc done,
+  offline bundle script done and live-verified. README updates next.
+- **Last completed step:** `scripts/build_offline_bundle.py` written AND run
+  live twice (not just read) — found and fixed two real bugs only visible at
+  runtime (see Findings below: the `uv export` self-reference collision, and
+  the `cloakbrowser-*.tar.gz` glob mismatch). `uv run poe bundle` now
+  produces a working `dist/offline/` (26 dependency wheels + this package's
+  own wheel + a correctly-named, correctly-laid-out CloakBrowser binary
+  archive + both install scripts). `uv run poe check` still green (64 tests)
+  after the script's addition.
+- **Next step:** README.md — "Corporate / air-gapped install" section (point
+  at `uv run poe bundle` + `install_offline.{sh,ps1}`) and "Architecture map"
+  section (the flat `webllm_proxy/` layout from the plan's §3), then `uv run
+  poe release` (build step only — do NOT run `uv publish`, not authorized).
 - **Blocking issues:** none. (Non-blocking: the databricks profile's session
   is logged out — pre-existing, unrelated to this refactor; needs
   `webllm-proxy login --provider databricks` headed, not attempted here since
@@ -66,14 +70,83 @@ _(keep this section current — overwrite, don't append)_
 - [x] B6 REST API (`http/research_routes.py`) + CLI `research` subcommand — **live-verified**
 
 ### Phase C — Discovery, docs, release
-- [ ] Deep-research discovery session + doc
-- [ ] `scripts/build_offline_bundle.py` + `install_offline.{sh,ps1}`
+- [x] Deep-research discovery session + doc (scoping note, not a live trigger
+      capture — see Phase B Findings; `docs/discovery/2026-07-11-deep-research-scoping.md`)
+- [x] `scripts/build_offline_bundle.py` + `install_offline.{sh,ps1}` — live-verified
 - [ ] README: corporate install + architecture map
 - [ ] `uv run poe release`
 
 ## Findings / deviations from plan
 
 _(dated, newest first — append, don't rewrite history)_
+
+- **2026-07-11 — `scripts/build_offline_bundle.py`: two real bugs, both only
+  visible by actually running the script, not by reading it:**
+  1. `uv export --format requirements.txt --no-dev --no-hashes` (no further
+     flags) includes **this package itself** as a local-path requirement
+     alongside its real dependencies. Handing that to `pip download` makes
+     pip try to build/archive this project into the same `wheels/` dir where
+     `uv build --wheel` had *just* placed its own wheel a moment earlier —
+     pip's interactive conflict prompt (`(i)gnore/(w)ipe/(b)ackup/(a)bort`)
+     then hangs forever non-interactively (`EOFError` on `input()`). Fixed
+     with `uv export --no-emit-project` (verified via `uv export --help`,
+     not guessed) so the export only lists real runtime deps. Also made
+     `main()` `shutil.rmtree(OUT, ignore_errors=True)` before rebuilding, so a
+     stale wheel from a *previous* run of this same script can never trigger
+     the same collision again.
+  2. `_bundle_cloakbrowser_binary()` named the archive after
+     `cache_dir.name` (e.g. `chromium-146.0.7680.177.5.tar.gz`), but both
+     `install_offline.sh` and `.ps1` glob for `cloakbrowser-*.tar.gz` — a
+     silent no-op on the target machine (install would run pip only, print
+     "no bundle found", never extract the real one). Fixed by prefixing the
+     archive name: `cloakbrowser-{cache_dir.name}.tar.gz`. Confirmed via
+     `binary_info()`'s real `cache_dir`/`binary_path` fields
+     (`~/.cloakbrowser/chromium-.../chrome`) and cloakbrowser's own
+     `config.get_cache_dir()`/`download.py` source that extracting the
+     archive back into `~/.cloakbrowser/` (what the install scripts do)
+     recreates the exact cache layout cloakbrowser's own lookup already
+     checks — so **no `CLOAKBROWSER_BINARY_PATH` override is needed** on the
+     target machine, just the extraction. (`CLOAKBROWSER_BINARY_PATH` itself
+     was confirmed, by reading `cloakbrowser/config.py`/`download.py`, to
+     want the `chrome` binary path directly, not a directory — relevant only
+     if a user pre-stages a binary manually instead of using this bundle.)
+  Live-verified end-to-end twice after both fixes: `uv run poe bundle`
+  produces `dist/offline/{wheels/ (26 dep wheels + own wheel),
+  cloakbrowser-chromium-146.0.7680.177.5.tar.gz, install_offline.sh, .ps1,
+  requirements.txt}`; `tar -tzf` on the archive confirmed the top-level dir
+  matches the real cache dir name. `uv run poe check` still green (64 tests,
+  ruff+ty clean) with the script in the tree. Also added `UP015` to
+  `scripts/*`'s ruff per-file-ignores (an unrelated pre-existing script,
+  `har_explore.py`, trips it; the ignore list is already documented as a
+  deliberately looser bar for one-off `scripts/*` tools, this just extends
+  it -- see that entry's own comment in pyproject.toml).
+- **2026-07-11 — Commit hygiene: split the already-completed Phase 0/A/B
+  work (all done in one continuous, uncommitted pass across earlier
+  sessions) into two logical commits matching the plan's own phase
+  boundaries** rather than one large commit, per the user's ask for
+  incremental logical commits: (1) flat layout + clean architecture + strict
+  toolchain (Phases 0+A), (2) the research feature (Phase B). Two files
+  needed a temporary hand-trim to make commit (1) buildable/gate-clean on
+  its own, since `server.py` and `providers/chatgpt/__init__.py` already had
+  Phase B's research-mounting code eagerly imported/referenced: trimmed both
+  to their pre-research shape, staged, gated (`uv run poe check` green, 59
+  tests), committed, then restored the full Phase B content for commit (2).
+  Verified each commit's isolated state with a `git stash push --keep-index
+  -u` round-trip (stash everything not staged, run the gate, restore) rather
+  than trusting the diff alone. Left three pre-existing, unrelated dirty
+  files (`docs/discovery/README.md`'s *other* index entry,
+  `scripts/dbx_models_probe.py`, `scripts/har_explore.py` — see the
+  2026-07-11 "Pre-existing uncommitted changes" finding below) out of both
+  commits by extracting just this work's own diff/entries where a file's
+  changes were mixed with theirs (`docs/discovery/README.md`: reconstructed
+  a "HEAD + only this session's new index entry" version by hand rather than
+  staging the whole modified file). Two stash entries
+  (`wip: phase B/C ...`, `wip: phase C ...`) are left in the stash list,
+  fully superseded/redundant (everything in them was individually verified
+  and extracted already) but not dropped -- dropping a stash wasn't
+  explicitly authorized, so they're harmless leftovers for the user to clear
+  (`git stash clear`) whenever convenient, not something a future session
+  needs to consult.
 
 - **2026-07-11 — Phase B shipped the emulated research backend only; the Deep
   Research backend is an honest, documented stub, not a guess.** Reasoning:
