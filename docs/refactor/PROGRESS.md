@@ -19,18 +19,16 @@
 
 _(keep this section current — overwrite, don't append)_
 
-- **Current phase:** Phase A complete and verified. Starting Phase B (research feature).
-- **Last completed step:** Phase A gate passed: `uv run poe check` green;
-  parity smoke on both providers after the full modularization (models,
-  streaming chat, tool round-trip) — chatgpt live end-to-end (including the
-  critical lock-deadlock fix, see Findings), databricks via static review +
-  a fake-session route-registration smoke (its login session is currently
-  stale, see Blocking issues).
-- **Next step:** Phase B — `domain/research.py` + `research/jobstore/memory.py`
-  (B1), the emulated backend (B2, ships first — must work on this free-tier
-  account), the Deep Research backend (B3 — likely an honest stub, see plan
-  §2 "Account is FREE plan"), the registry (B4), `application/research.py` +
-  `ResearchScheduler` (B5), and the REST API + CLI (B6).
+- **Current phase:** Phase B complete and verified. Starting Phase C (discovery, docs, release).
+- **Last completed step:** Phase B gate passed: `uv run poe check` green (64 tests);
+  the full research pipeline live-verified end-to-end via the actual CLI
+  (`webllm-proxy research "<query>"` → real ChatGPT web search → structured
+  markdown report in ~10s) plus the REST API directly (list/get/delete,
+  404s, 400 validation).
+- **Next step:** Phase C — a *lightweight* Deep Research availability check
+  (not a full trigger-discovery session; see Findings for why), then
+  `scripts/build_offline_bundle.py` + install scripts, README updates,
+  `uv run poe release` (build only, no publish).
 - **Blocking issues:** none. (Non-blocking: the databricks profile's session
   is logged out — pre-existing, unrelated to this refactor; needs
   `webllm-proxy login --provider databricks` headed, not attempted here since
@@ -59,13 +57,13 @@ _(keep this section current — overwrite, don't append)_
 - [x] Gate: parity smoke both providers (models, streaming chat, tool round-trip) —
       chatgpt live; databricks static + fake-session route smoke (session logged out)
 
-### Phase B — Research feature
-- [ ] B1 Domain + store (`domain/research.py`, `research/jobstore/memory.py`)
-- [ ] B2 Emulated backend (ships first)
-- [ ] B3 Deep Research backend
-- [ ] B4 Registry (`research/backends/resolve_backend`)
-- [ ] B5 Application (`application/research.py`, `ResearchScheduler`)
-- [ ] B6 REST API (`http/research_routes.py`) + CLI `research` subcommand
+### Phase B — Research feature ✅ DONE
+- [x] B1 Domain + store (`domain/research.py`, `research/jobstore/memory.py`)
+- [x] B2 Emulated backend (ships first) — **live-verified, works, cites real sources**
+- [x] B3 Deep Research backend — honest stub (`available()` hardcoded False); see Findings
+- [x] B4 Registry (`research/backends/resolve_backend`)
+- [x] B5 Application (`application/research.py`, `ResearchScheduler`)
+- [x] B6 REST API (`http/research_routes.py`) + CLI `research` subcommand — **live-verified**
 
 ### Phase C — Discovery, docs, release
 - [ ] Deep-research discovery session + doc
@@ -77,6 +75,38 @@ _(keep this section current — overwrite, don't append)_
 
 _(dated, newest first — append, don't rewrite history)_
 
+- **2026-07-11 — Phase B shipped the emulated research backend only; the Deep
+  Research backend is an honest, documented stub, not a guess.** Reasoning:
+  the account this was built against is confirmed free-tier (per
+  docs/discovery/2026-07-10-tool-calling.md Update 5), and ChatGPT Deep
+  Research has historically been a paid-tier-only feature -- so before
+  spending a live-browser discovery session hunting for a trigger field
+  (candidates would've been guesses: `system_hints`, `conversation_mode`,
+  `enabled_tools`/`disabled_tools`, per the plan's own risk notes), the
+  account almost certainly can't exercise it at all. Per this project's own
+  rule (never guess APIs -- verify by reading/capturing first) and the "don't
+  guess" instruction, `research/backends/deep_research.py` ships as a real
+  class satisfying the `ResearchBackend` port with `available()` hardcoded to
+  `False` and a `NotImplementedError` + docstring pointing at exactly what a
+  future session needs to do (capture the outgoing `f/conversation` body
+  while toggling Deep Research in the real UI, on an account that has it).
+  `research.backends.resolve_backend` already prefers it over `emulated` the
+  moment `available()` returns True -- **no other code needs to change** when
+  that discovery session eventually happens. This is the plan's own risk
+  mitigation (§11: "emulated ships first ... deep_research is additive behind
+  an availability probe") playing out exactly as designed. Full reasoning +
+  concrete next steps: `docs/discovery/2026-07-11-deep-research-scoping.md`.
+- **2026-07-11 — Emulated research backend live-verified end-to-end, first
+  try:** `webllm-proxy research "What is the toolz Python library used for?"`
+  → real ChatGPT web search (cited `toolz.readthedocs.io` and the PyPI page,
+  not fabricated) → a correctly-structured `# Research Report` /
+  `## Summary` / `## Findings` / `## Sources` markdown report, in ~10s. Also
+  verified the REST API directly: `GET /v1/research` (list), `GET .../<id>`,
+  `DELETE .../<id>` (204, then 404 on re-fetch), 404 for an unknown id, 400
+  for an empty `query`. No prompt-injection framing was needed (unlike the
+  tool-calling contract) -- the research prompt is just normal task
+  instructions, so `gpt-5-mini` (and likely other models) comply without the
+  "SYSTEM INSTRUCTIONS outranks you" framing that `auto`/`gpt-5-5` refuse.
 - **2026-07-11 — CRITICAL (found + fixed via live testing, not caught by unit
   tests or `ty`):** the first cut of the "serialized_browser" helper
   (`http/health.py`, then called `stream_with_lock`) called `lock.acquire()`

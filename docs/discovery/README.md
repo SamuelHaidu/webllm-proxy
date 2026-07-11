@@ -11,6 +11,16 @@ tagged **[chatgpt]** or **[databricks]**.
 
 ## Entries
 
+- **[chatgpt]** `2026-07-11-deep-research-scoping.md` — **Scoping note, not a
+  trigger.** Explains why the research-job feature's Deep Research backend
+  ships as a documented stub (`available()` hardcoded `False`) rather than a
+  live-discovered trigger: the account is confirmed free-tier (Update 5
+  below) and Deep Research is historically paid-tier-gated, so a live
+  discovery session would likely find nothing to toggle. The emulated backend
+  (a plain chat turn + a research-style prompt, no trigger needed) ships
+  instead and is **live-verified working** (real web search, real cited
+  sources, structured markdown report, ~10s). Lays out the concrete
+  capture-and-diff steps for whenever an entitled account is available.
 - **[databricks]** `2026-07-10-databricks-llmproxy.md` — **NEW TARGET:
   Databricks Genie/assistant `llmproxy`** (separate from ChatGPT). Pre-browser HAR analysis via
   `scripts/har_explore.py`. The Genie-code channel `POST

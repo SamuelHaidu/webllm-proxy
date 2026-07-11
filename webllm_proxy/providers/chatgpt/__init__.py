@@ -184,8 +184,16 @@ class ChatGptProvider(Provider):
 
         register_chatgpt(app, session, self)
 
+    def research_backend(self, session):
+        # Lazy: research/ isn't needed unless something actually asks for it.
+        from ...research.backends import resolve_backend
+
+        return resolve_backend(session)
+
     def banner(self, host, port):
         return [
             f"  GET  http://{host}:{port}/v1/models",
             f"  POST http://{host}:{port}/v1/chat/completions",
+            f"  POST http://{host}:{port}/v1/research      (async job: submit -> poll -> report)",
+            f"  GET  http://{host}:{port}/v1/research/<id>",
         ]
