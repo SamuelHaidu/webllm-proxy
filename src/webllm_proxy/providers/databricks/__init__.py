@@ -21,18 +21,19 @@ _SESSION_JS = ("async () => { try { const r = await fetch('/auth/session/info',"
                "{credentials:'include'}); if(!r.ok) return null; "
                "return (await r.json()).userId || null; } catch(e){ return null; } }")
 
-# In-page: read a fresh CSRF token, POST llmproxy, and drain the body so the
-# response completes promptly (Network.loadingFinished fires) instead of
-# lingering open. The org id is passed in from config (authoritative) rather
-# than read from location.search, which the workspace SPA drops after routing
-# (an empty x-databricks-org-id makes the edge reject the request with 400).
+# In-page: read a fresh CSRF token, POST the request to `arg.path` (the llmproxy
+# sub-path for the chosen channel: Anthropic `llmproxy/` or Azure
+# `proxy/chat/completions`), and drain the body so the response completes promptly
+# (Network.loadingFinished fires) instead of lingering open. The org id is passed
+# in from config (authoritative) rather than read from location.search, which the
+# workspace SPA drops after routing (an empty x-databricks-org-id -> 400).
 _START_JS = r"""
 async (arg) => {
   const body = arg.body;
   const org = arg.org || (new URLSearchParams(location.search).get('o') || '');
   const s = await (await fetch('/auth/session/info', {credentials:'include'})).json();
   window.__dbx = (async () => {
-    const res = await fetch('%s', {method:'POST', credentials:'include',
+    const res = await fetch(arg.path, {method:'POST', credentials:'include',
       headers:{'content-type':'application/json', 'accept':'text/event-stream',
                'x-csrf-token': s.csrfToken, 'x-databricks-org-id': String(org)},
       body: JSON.stringify(body)});
@@ -41,7 +42,7 @@ async (arg) => {
   })();
   return true;
 }
-""" % config.LLMPROXY_PATH
+"""
 
 
 class DatabricksProvider(Provider):
@@ -82,12 +83,17 @@ class DatabricksProvider(Provider):
             return False
 
     def capture_match(self, url: str) -> bool:
-        return url.split("?")[0].endswith(config.LLMPROXY_PATH)
+        path = url.split("?")[0]
+        return (path.endswith(config.LLMPROXY_PATH)
+                or path.endswith(config.CHAT_COMPLETIONS_PATH))
 
     def trigger(self, page, job):
-        # job.payload is the ready-to-send llmproxy (Anthropic + envelope) body.
-        # Pass the org id from config so it survives the SPA dropping ?o=.
-        page.evaluate(_START_JS, {"body": job.payload, "org": config.org_id()})
+        # job.payload is {"path": <llmproxy sub-path>, "body": <request body>}:
+        # the route picks the channel (Anthropic `llmproxy/` or Azure
+        # `proxy/chat/completions`). Pass the org id from config so it survives the
+        # SPA dropping ?o=.
+        page.evaluate(_START_JS, {"path": job.payload["path"],
+                                  "body": job.payload["body"], "org": config.org_id()})
 
     def make_accumulator(self) -> Accumulator:
         return PassthroughAccumulator()
@@ -98,5 +104,6 @@ class DatabricksProvider(Provider):
 
     def banner(self, host, port):
         return [f"  GET  http://{host}:{port}/v1/models",
-                f"  POST http://{host}:{port}/v1/messages   (Anthropic Messages)",
-                f"  POST http://{host}:{port}/v1/messages/count_tokens"]
+                f"  POST http://{host}:{port}/v1/messages          (Anthropic; Claude)",
+                f"  POST http://{host}:{port}/v1/messages/count_tokens",
+                f"  POST http://{host}:{port}/v1/chat/completions   (OpenAI; GPT-4.1 Azure)"]

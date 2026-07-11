@@ -37,6 +37,10 @@ tagged **[chatgpt]** or **[databricks]**.
   account = **Claude Sonnet 4.5** (`anthropic` channel) **+ `gpt-41-2025-04-14`
   / `gpt-41-mini-2025-04-14`** (`azure` `proxy/chat/completions` channel,
   streaming confirmed); all other names are `DISABLED` (gated) or `NOT_FOUND`.
+  **GPT-4.1 Azure channel now wired** as OpenAI `POST /v1/chat/completions`
+  (two-channel transport: the job payload carries the target sub-path). Stream
+  passthrough + non-stream assembly + native `tool_calls`; validated with `pi`
+  end-to-end. Databricks now serves Claude (Anthropic) **and** GPT-4.1 (OpenAI).
 - **[chatgpt]** `2026-07-10-thinking-effort.md` — **Reasoning effort.** `/backend-api/models`
   advertises per-model `configurable_thinking_effort` + `thinking_efforts`, and
   the `f/conversation` body carries a root `thinking_effort` on a 4-level ladder

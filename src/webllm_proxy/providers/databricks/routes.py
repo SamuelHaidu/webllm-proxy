@@ -1,12 +1,14 @@
-"""Anthropic Messages surface for the Databricks provider (near pass-through).
+"""HTTP surface for the Databricks provider (near pass-through, two channels).
 
-  GET  /v1/models     -> the enabled model registrations (Anthropic list shape)
-  POST /v1/messages   -> wrap the request in the llmproxy envelope, run it in the
-                         browser, and stream the native Anthropic SSE straight
-                         back to the client.
+  GET  /v1/models          -> the usable model registrations (Claude + GPT-4.1)
+  POST /v1/messages        -> Anthropic Messages -> llmproxy `anthropic/v1/messages`
+                              (Claude Sonnet 4.5); native Anthropic SSE straight back.
+  POST /v1/chat/completions-> OpenAI Chat Completions -> llmproxy
+                              `proxy/chat/completions` (Azure GPT-4.1); OpenAI SSE.
 """
 import json
 import logging
+import time
 import uuid
 
 from flask import Response, jsonify, request
@@ -112,6 +114,91 @@ def build_llmproxy_body(req: dict):
     return body, model
 
 
+def build_azure_body(req: dict):
+    """Turn an incoming OpenAI Chat Completions request into the Databricks
+    `proxy/chat/completions` (Azure OpenAI) envelope: the OpenAI request goes
+    under `params`, with the routing fields (`@method`, `deployment`, `model`,
+    `apiVersion`) and `metadata.clientId` alongside. We ALWAYS request upstream
+    streaming (`params.stream=True`) because the CDP capture is reliable for SSE
+    but returns an empty body for a single non-stream response; the route
+    re-assembles a non-stream completion from the chunks when the client wants one."""
+    model = req.get("model") or (config.OPENAI_MODELS[0] if config.OPENAI_MODELS
+                                 else "gpt-41-2025-04-14")
+    params = dict(req)
+    params["model"] = model
+    params["stream"] = True                      # force upstream SSE (see docstring)
+    return {
+        "params": params,
+        "metadata": {"traceId": str(uuid.uuid4()), "clientId": config.AZURE_CLIENT_ID},
+        "@method": "openAiServiceChatCompletionRequest",
+        "deployment": model, "model": model,
+        "apiVersion": config.AZURE_API_VERSION,
+    }, model
+
+
+def assemble_completion(sse_text: str, model: str) -> dict:
+    """Fold an OpenAI streaming SSE (`data: {chunk}` lines) into one
+    `chat.completion` object, for clients that asked for a non-stream reply.
+    Concatenates text deltas and tool_call argument deltas; keeps the last
+    finish_reason and any usage."""
+    content, role, finish, usage = [], "assistant", None, None
+    tool_calls: dict = {}
+    for line in sse_text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        for ch in obj.get("choices") or []:
+            delta = ch.get("delta") or {}
+            if delta.get("role"):
+                role = delta["role"]
+            if delta.get("content"):
+                content.append(delta["content"])
+            if ch.get("finish_reason"):
+                finish = ch["finish_reason"]
+            for tc in delta.get("tool_calls") or []:
+                slot = tool_calls.setdefault(tc.get("index", 0),
+                                             {"id": tc.get("id"), "type": "function",
+                                              "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                slot["function"]["name"] += fn.get("name") or ""
+                slot["function"]["arguments"] += fn.get("arguments") or ""
+        if obj.get("usage"):
+            usage = obj["usage"]
+    message = {"role": role, "content": "".join(content) or None}
+    if tool_calls:
+        message["tool_calls"] = [tool_calls[k] for k in sorted(tool_calls)]
+    return {
+        "id": "chatcmpl-" + uuid.uuid4().hex[:24], "object": "chat.completion",
+        "created": int(time.time()), "model": model,
+        "choices": [{"index": 0, "message": message,
+                     "finish_reason": finish or "stop"}],
+        "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _collect(first, out_q) -> str:
+    """Drain the remaining `("data", ...)` events (starting from `first`) off a
+    job queue into one string, stopping at the first error/done/sentinel."""
+    chunks = []
+    ev = first
+    while ev is not None:
+        if ev[0] == "data":
+            chunks.append(ev[1])
+        elif ev[0] in ("error", "done"):
+            break
+        ev = out_q.get()
+    return "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+
+
 def _estimate_input_tokens(req: dict) -> int:
     """Rough local token estimate (~4 chars/token) over the countable request
     text: system + message content + tool schemas. Used as a fallback because the
@@ -141,8 +228,8 @@ def register(app, session, provider):
 
     @app.get("/v1/models")
     def models():
-        data = [{"type": "model", "id": m, "display_name": m}
-                for m in config.ENABLED_MODELS]
+        ids = list(config.ENABLED_MODELS) + list(config.OPENAI_MODELS)
+        data = [{"type": "model", "id": m, "display_name": m} for m in ids]
         return jsonify({"data": data, "has_more": False,
                         "first_id": data[0]["id"] if data else None,
                         "last_id": data[-1]["id"] if data else None})
@@ -165,7 +252,7 @@ def register(app, session, provider):
             except Exception:
                 pass
 
-        out_q = session.submit(body)
+        out_q = session.submit({"path": config.LLMPROXY_PATH, "body": body})
 
         # Read the response metadata (status/content-type) before streaming.
         status = 200
@@ -219,7 +306,7 @@ def register(app, session, provider):
         body["_llmproxy_fields"]["endpoint"] = config.ANTHROPIC_COUNT_TOKENS_ENDPOINT
         log.info("count_tokens: model=%s tools=%d -> llmproxy", model, len(body.get("tools") or []))
 
-        out_q = session.submit(body)
+        out_q = session.submit({"path": config.LLMPROXY_PATH, "body": body})
         status, ctype, chunks, backend_err = 200, "application/json", [], None
         while True:
             ev = out_q.get(timeout=180)
@@ -246,3 +333,57 @@ def register(app, session, provider):
         est = _estimate_input_tokens(req)
         log.info("count_tokens: backend unsupported (status=%s) -> local estimate %d", status, est)
         return jsonify({"input_tokens": est})
+
+    @app.post("/v1/chat/completions")
+    def chat_completions():
+        """OpenAI Chat Completions -> the Azure GPT-4.1 deployments via the
+        llmproxy `proxy/chat/completions` channel. We always stream upstream (the
+        CDP capture only reliably gets SSE, not a single JSON body); a client that
+        asked for `stream:false` gets the chunks folded back into one completion."""
+        if not session.ready:
+            return jsonify({"error": {"message": "session initializing",
+                                      "type": "unavailable"}}), 503
+        req = request.get_json(silent=True) or {}
+        want_stream = bool(req.get("stream", True))
+        body, model = build_azure_body(req)
+        log.info("chat_completions: model=%s tools=%d client_stream=%s -> azure",
+                 model, len(req.get("tools") or []), want_stream)
+
+        out_q = session.submit({"path": config.CHAT_COMPLETIONS_PATH, "body": body})
+        status, first = 200, None
+        while True:
+            ev = out_q.get(timeout=180)
+            if ev is None:
+                break
+            if ev[0] == "meta":
+                status = ev[1].get("status", status)
+                continue
+            first = ev
+            break
+        if first is not None and first[0] == "error":
+            return jsonify({"error": {"message": first[1], "type": "upstream_error"}}), 502
+
+        if status >= 400:
+            body_txt = _collect(first, out_q)
+            return Response(body_txt or json.dumps(
+                {"error": {"message": "upstream error", "code": status}}),
+                status=status, content_type="application/json")
+
+        if want_stream:
+            def gen():
+                ev, seen_done = first, False
+                while ev is not None:
+                    if ev[0] == "data":
+                        if "[DONE]" in ev[1]:
+                            seen_done = True
+                        yield ev[1]
+                    elif ev[0] in ("error", "done"):
+                        break
+                    ev = out_q.get()
+                if not seen_done:
+                    yield "data: [DONE]\n\n"
+            return Response(gen(), status=200, content_type="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+        completion = assemble_completion(_collect(first, out_q), model)
+        return jsonify(completion)

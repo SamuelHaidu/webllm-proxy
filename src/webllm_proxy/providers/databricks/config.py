@@ -38,6 +38,18 @@ DEFAULT_MODEL = env.env_str("DATABRICKS_PROXY_MODEL", "claude-4-5-sonnet")
 ENABLED_MODELS = [m.strip() for m in env.env_str(
     "DATABRICKS_PROXY_MODELS", "claude-4-5-sonnet").split(",") if m.strip()]
 
+# Azure OpenAI channel: a second llmproxy sub-path (`proxy/chat/completions`)
+# serving this account's enabled GPT-4.1 deployments. OpenAI-shaped request +
+# streaming SSE; envelope is `{params, metadata.clientId, @method, deployment,
+# apiVersion}` (NOT the `_llmproxy_fields` used by the Anthropic channel). Exposed
+# as OpenAI `/v1/chat/completions`. See docs/discovery/2026-07-10-databricks-*.
+CHAT_COMPLETIONS_PATH = "/ajax-api/2.0/conversation/proxy/chat/completions"
+AZURE_CLIENT_ID = env.env_str("DATABRICKS_PROXY_AZURE_CLIENT_ID", "auto-rename-action")
+AZURE_API_VERSION = env.env_str("DATABRICKS_PROXY_AZURE_API_VERSION", "2025-01-01-preview")
+OPENAI_MODELS = [m.strip() for m in env.env_str(
+    "DATABRICKS_PROXY_OPENAI_MODELS",
+    "gpt-41-2025-04-14,gpt-41-mini-2025-04-14").split(",") if m.strip()]
+
 
 def org_id() -> str:
     q = parse_qs(urlsplit(WORKSPACE_URL).query)

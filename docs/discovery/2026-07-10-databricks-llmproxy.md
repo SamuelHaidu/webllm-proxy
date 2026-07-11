@@ -460,3 +460,51 @@ Anthropic-SDK client that calls count_tokens gets a usable `{"input_tokens": N}`
 (HTTP 200) instead of a hard failure. The estimate is approximate and logged as a
 fallback (`_estimate_input_tokens`, unit-tested); it is NOT Anthropic's exact
 tokenizer. Real per-request accounting still comes from response `usage`.
+
+## Update — GPT-4.1 (Azure) channel wired as `POST /v1/chat/completions`
+
+The two GPT-4.1 Azure deployments (`gpt-41-2025-04-14`, `gpt-41-mini-2025-04-14`)
+are now exposed via a second channel on the same provider/port, OpenAI-shaped.
+
+**Transport made two-channel.** The browser plumbing was Anthropic-only
+(`trigger` posted to `llmproxy/`, `capture_match` matched only it). Now the job
+payload carries the target sub-path — `session.submit({"path", "body"})` — so
+`trigger` posts to whichever channel the route chose, `_START_JS` takes
+`arg.path`, and `capture_match` matches **both** `llmproxy/` and
+`proxy/chat/completions`. Only one request is ever in flight (serialized worker),
+so matching both is safe. The same `PassthroughAccumulator` serves both (raw
+bytes through); the route decides the wire shape.
+
+**The route (`routes.py::chat_completions`).** `build_azure_body` wraps the
+incoming OpenAI request under `params`, with `@method:
+openAiServiceChatCompletionRequest`, `deployment`/`model`, `apiVersion`
+(`2025-01-01-preview`), and `metadata.clientId: auto-rename-action` — NOT the
+`_llmproxy_fields` the Anthropic channel uses. It **always requests upstream
+streaming** because the CDP capture reliably gets SSE but returns an empty body
+for a single non-stream JSON (the same emptiness seen on non-stream `/v1/messages`
+and `count_tokens`). So: client `stream:true` → pass the OpenAI SSE straight
+through (upstream already emits `data: [DONE]`; we append one only if missing);
+client `stream:false` → `assemble_completion` folds the chunks (text + tool_call
+arg deltas + usage) into one `chat.completion`.
+
+**Validated live (all through the shipped proxy):**
+- `/v1/models` lists `claude-4-5-sonnet` + both `gpt-41…`.
+- `/v1/messages` (Claude) still works — no regression from the payload-shape change.
+- `/v1/chat/completions` **stream**: proper `chat.completion.chunk`s, content
+  deltas, `finish_reason:"stop"`, `usage`, ending `data: [DONE]` (Azure's extra
+  `prompt_filter_results`/`obfuscation`/`latency_checkpoint` fields are ignored by
+  OpenAI clients).
+- `/v1/chat/completions` **non-stream**: a clean assembled `chat.completion`.
+- **Native `tool_calls`** stream correctly (a `bash` call with streamed
+  `{"command": …}` arguments).
+- **`pi` end-to-end** (openai-completions provider `databricks-openai` →
+  `gpt-41-2025-04-14`, `--tools write,read,bash`): built `calc.py` +
+  `test_calc.py` (real recursive descent), ran the suite via bash (7 azure tool
+  turns), and **truthfully reported a real 1/6 test failure** (whitespace) rather
+  than faking success.
+
+So the Databricks provider now serves **Claude Sonnet 4.5** (Anthropic
+`/v1/messages`) **and GPT-4.1 / GPT-4.1-mini** (OpenAI `/v1/chat/completions`),
+both with native tool calling. Client config for `pi`: add an
+`openai-completions` provider at `http://127.0.0.1:5103/v1` (see
+`~/.pi/agent/models.json` `databricks-openai`).

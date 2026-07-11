@@ -5,7 +5,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from webllm_proxy.providers.databricks.routes import build_llmproxy_body, _estimate_input_tokens  # noqa: E402
+from webllm_proxy.providers.databricks.routes import (  # noqa: E402
+    build_llmproxy_body, build_azure_body, assemble_completion, _estimate_input_tokens,
+)
 from webllm_proxy.providers.databricks import config  # noqa: E402
 
 
@@ -97,6 +99,55 @@ def test_estimate_input_tokens_counts_text():
     # list content blocks are counted too
     assert _estimate_input_tokens(
         {"messages": [{"role": "user", "content": [{"type": "text", "text": "x" * 40}]}]}) >= 10
+
+
+def test_build_azure_body_shape():
+    body, model = build_azure_body({"model": "gpt-41-2025-04-14",
+                                    "messages": [{"role": "user", "content": "hi"}],
+                                    "stream": False, "temperature": 0.7})
+    assert model == "gpt-41-2025-04-14"
+    assert body["@method"] == "openAiServiceChatCompletionRequest"
+    assert body["deployment"] == "gpt-41-2025-04-14" and body["model"] == "gpt-41-2025-04-14"
+    assert body["metadata"]["clientId"] == config.AZURE_CLIENT_ID
+    assert body["apiVersion"] == config.AZURE_API_VERSION
+    # the OpenAI request rides under params; we ALWAYS stream upstream
+    assert body["params"]["messages"][0]["content"] == "hi"
+    assert body["params"]["stream"] is True
+    # NOT the Anthropic envelope
+    assert "_llmproxy_fields" not in body
+
+
+def test_build_azure_body_defaults_model():
+    _, model = build_azure_body({"messages": []})
+    assert model == config.OPENAI_MODELS[0]
+
+
+def test_assemble_completion_text():
+    sse = ('data: {"choices":[{"delta":{"role":"assistant"}}]}\n'
+           'data: {"choices":[{"delta":{"content":"Hel"}}]}\n'
+           'data: {"choices":[{"delta":{"content":"lo"}}]}\n'
+           'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+           '"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n'
+           'data: [DONE]\n')
+    c = assemble_completion(sse, "gpt-41-2025-04-14")
+    assert c["object"] == "chat.completion" and c["model"] == "gpt-41-2025-04-14"
+    msg = c["choices"][0]["message"]
+    assert msg["role"] == "assistant" and msg["content"] == "Hello"
+    assert c["choices"][0]["finish_reason"] == "stop"
+    assert c["usage"]["total_tokens"] == 5
+
+
+def test_assemble_completion_tool_calls():
+    sse = ('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+           '"function":{"name":"get_", "arguments":"{\\"x\\":"}}]}}]}\n'
+           'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+           '"function":{"name":"weather","arguments":"1}"}}]},"finish_reason":"tool_calls"}]}\n'
+           'data: [DONE]\n')
+    c = assemble_completion(sse, "gpt-41-mini-2025-04-14")
+    tc = c["choices"][0]["message"]["tool_calls"][0]
+    assert tc["id"] == "call_1" and tc["function"]["name"] == "get_weather"
+    assert tc["function"]["arguments"] == '{"x":1}'
+    assert c["choices"][0]["finish_reason"] == "tool_calls"
 
 
 if __name__ == "__main__":
