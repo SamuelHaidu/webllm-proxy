@@ -24,6 +24,9 @@ dist/
 *.egg-info/
 *.egg
 
+# Claude Code local (personal, machine-specific) settings — never commit
+.claude/settings.local.json
+
 # IDE / OS
 .vscode/
 .idea/
