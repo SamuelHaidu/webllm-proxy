@@ -1,0 +1,30 @@
+{
+  "name": "@webllm-proxy/pi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "pi integration for webllm-proxy: registers the proxy's models as a `webllm` provider (via the aggregator gateway) and adds agent tools.",
+  "type": "module",
+  "keywords": ["pi-package", "webllm-proxy"],
+  "pi": {
+    "extensions": ["extensions"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "npm run lint && npm run typecheck && npm run test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@earendil-works/pi-coding-agent": "^0.80.0",
+    "@types/node": "^22.0.0",
+    "typebox": "1.1.38",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
