@@ -28,17 +28,29 @@ _OPTIONS_SETS = [
     "search_result_progress_messages_with_search_queries",
     "update_textdoc_response_after_streaming",
     "deepleo_networking_timeout_10minutes_canmore",
-    "cwc_flux_image", "cwc_code_interpreter", "cwc_code_interpreter_amsfix",
-    "enable_msa_user", "cwcgptv",
-    "flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch", "gptvnorm2048",
-    "pdnascan", "cwc_code_interpreter_citation_fix",
+    "cwc_flux_image",
+    "cwc_code_interpreter",
+    "cwc_code_interpreter_amsfix",
+    "enable_msa_user",
+    "cwcgptv",
+    "flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch",
+    "gptvnorm2048",
+    "pdnascan",
+    "cwc_code_interpreter_citation_fix",
     "code_interpreter_interactive_charts",
     "cwc_code_interpreter_interactive_charts_inline_image",
-    "code_interpreter_matplotlib_patching", "cwc_fileupload_odb",
-    "update_memory_plugin", "add_custom_instructions", "cwc_flux_v3",
-    "flux_v3_progress_messages", "enable_batch_token_processing", "enable_gg_gpt",
+    "code_interpreter_matplotlib_patching",
+    "cwc_fileupload_odb",
+    "update_memory_plugin",
+    "add_custom_instructions",
+    "cwc_flux_v3",
+    "flux_v3_progress_messages",
+    "enable_batch_token_processing",
+    "enable_gg_gpt",
     "flux_v3_image_gen_enable_non_watermarked_storage",
-    "flux_v3_image_gen_enable_story", "rich_responses", "pages_citations",
+    "flux_v3_image_gen_enable_story",
+    "rich_responses",
+    "pages_citations",
     "pages_citations_multiturn",
 ]
 
@@ -60,7 +72,9 @@ class M365Edition(Edition):
         return [
             ModelInfo("Magic", "Auto", "Decides how long to think", default=True),
             ModelInfo("Chat", "Quick Response", "Answers right away"),
-            ModelInfo("Reasoning", "Think Deeper", "Think longer for better answers", reasoning=True),
+            ModelInfo(
+                "Reasoning", "Think Deeper", "Think longer for better answers", reasoning=True
+            ),
             ModelInfo("Gpt_5_5_Chat", "GPT 5.5 Quick Response", family="GPT"),
             ModelInfo("Gpt_5_5_Reasoning", "GPT 5.5 Think Deeper", reasoning=True, family="GPT"),
         ]
@@ -85,11 +99,16 @@ class M365Edition(Edition):
             if not oid:
                 return
             title = opt.get("menuItemTitle") or opt.get("shortTitle")
-            out.append(ModelInfo(
-                id=oid, title=title, description=opt.get("menuItemDescription"),
-                reasoning=("reason" in oid.lower() or "think" in (title or "").lower()),
-                family=family, default=(oid == default_id),
-            ))
+            out.append(
+                ModelInfo(
+                    id=oid,
+                    title=title,
+                    description=opt.get("menuItemDescription"),
+                    reasoning=("reason" in oid.lower() or "think" in (title or "").lower()),
+                    family=family,
+                    default=(oid == default_id),
+                )
+            )
 
         for opt in meta.get("availableModelSelectionOptions") or []:
             add(opt)
@@ -100,7 +119,8 @@ class M365Edition(Edition):
             return self.default_models()
         try:
             resp = await http.post(
-                _SHELL_URL, json={"action": "RefreshNavPane"},
+                _SHELL_URL,
+                json={"action": "RefreshNavPane"},
                 headers={"x-route-id": "chat", **credential.headers()},
             )
             resp.raise_for_status()

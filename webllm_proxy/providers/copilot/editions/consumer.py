@@ -48,8 +48,9 @@ class ConsumerEdition(Edition):
             if not isinstance(f, str):
                 continue
             if "deep-research" in f:
-                found.setdefault("deep-research",
-                                  ModelInfo("deep-research", "Deep Research", reasoning=True))
+                found.setdefault(
+                    "deep-research", ModelInfo("deep-research", "Deep Research", reasoning=True)
+                )
             elif "smart-mode" in f:
                 found.setdefault("smart", ModelInfo("smart", "Smart", default=True))
         return list(found.values())
@@ -84,7 +85,11 @@ class ConsumerEdition(Edition):
             "performUserMerge": True,
             "deferredDataUseCapable": True,
         }
-        headers = {"Origin": _ORIGIN, "User-Agent": self.ws_headers()["User-Agent"], **credential.headers()}
+        headers = {
+            "Origin": _ORIGIN,
+            "User-Agent": self.ws_headers()["User-Agent"],
+            **credential.headers(),
+        }
         resp = await http.post(_START_URL, json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()

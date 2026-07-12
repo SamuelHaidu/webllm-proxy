@@ -77,6 +77,5 @@ class Edition(abc.ABC):
         """Create/obtain a conversation. Editions that can't do this off-browser
         raise `NotImplementedError` (pass an explicit `ConversationRef` instead)."""
         raise NotImplementedError(
-            f"{self.name}: obtain a conversation id from a browser session and "
-            "pass it explicitly"
+            f"{self.name}: obtain a conversation id from a browser session and pass it explicitly"
         )
