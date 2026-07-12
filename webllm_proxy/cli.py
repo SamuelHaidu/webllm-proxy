@@ -3,6 +3,7 @@
   webllm-proxy serve    --provider chatgpt|databricks   run the API server (default)
   webllm-proxy login    --provider chatgpt|databricks   one-time headed login (needs a display)
   webllm-proxy install                                  pre-download the stealth browser binary
+  webllm-proxy gateway                                  aggregate all providers on one API surface
   webllm-proxy research "<query>"                       submit + poll a research job
                                                          (needs `serve` running)
 
@@ -165,6 +166,26 @@ def _research(query: str, host: str, port: int, timeout_s: float = 1800.0) -> in
     return 1
 
 
+def _gateway(host: str, port: int, upstreams_spec: str | None) -> int:
+    """Run the aggregator gateway: a single OpenAI/Anthropic surface fronting
+    every running per-provider proxy (models merged + namespaced, requests
+    routed by the `<provider>__<slug>` prefix). Holds no browser itself."""
+    from .gateway.app import build_gateway_app
+    from .gateway.upstreams import default_upstreams, parse_upstreams
+
+    ups = parse_upstreams(upstreams_spec) if upstreams_spec else default_upstreams()
+    app = build_gateway_app(ups)
+    print("[gateway] fronting: " + ", ".join(f"{n} -> {u.base_url}" for n, u in ups.items()))
+    print(f"[gateway] ready on http://{host}:{port}")
+    print("  GET  /v1/models             merged; ids namespaced <provider>__<slug>")
+    print("  POST /v1/chat/completions   routed by model prefix")
+    print("  POST /v1/messages           routed by model prefix")
+    print("  GET  /health                aggregated upstream readiness")
+    with contextlib.suppress(KeyboardInterrupt):
+        app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)
+    return 0
+
+
 def main(argv=None) -> int:
     configure_logging()
     p = argparse.ArgumentParser(
@@ -197,6 +218,17 @@ def main(argv=None) -> int:
     sp_research.add_argument("query")
     sp_research.add_argument("--host", default="127.0.0.1")
     sp_research.add_argument("--port", type=int, default=5102)
+    sp_gateway = sub.add_parser(
+        "gateway", help="aggregate all running providers on one OpenAI/Anthropic surface"
+    )
+    sp_gateway.add_argument("--host", default="127.0.0.1")
+    sp_gateway.add_argument("--port", type=int, default=5100)
+    sp_gateway.add_argument(
+        "--upstreams",
+        default=None,
+        help="override the upstream map, e.g. "
+        "'chatgpt=http://127.0.0.1:5102,databricks=http://127.0.0.1:5103'",
+    )
 
     args = p.parse_args(argv)
     cmd = args.cmd or "serve"
@@ -206,6 +238,8 @@ def main(argv=None) -> int:
         return _install()
     if cmd == "research":
         return _research(args.query, args.host, args.port)
+    if cmd == "gateway":
+        return _gateway(args.host, args.port, args.upstreams)
     # default: serve
     return _serve(
         getattr(args, "provider", DEFAULT_PROVIDER),

@@ -83,6 +83,10 @@ max-args = 6
 # indirection between functions that all need the same handful of locals.
 "webllm_proxy/http/openai_routes.py" = ["C901", "PLR0911", "PLR0912", "PLR0915", "PLR2004"]
 "webllm_proxy/http/anthropic_routes.py" = ["C901", "PLR0915", "PLR2004"]
+# The aggregator gateway's Flask factory: many small route registrations push
+# mccabe over 8 (same shape as the route modules above), and a bare 200 status
+# check. Held to the same pragmatic bar.
+"webllm_proxy/gateway/app.py" = ["C901", "PLR2004"]
 # Magic-number / long-assert-line noise in test literals is normal, not a smell.
 "tests/*" = ["PLR2004", "E501"]
 # One-off reverse-engineering/dev scripts (not shipped, not imported by the
