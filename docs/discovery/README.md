@@ -84,6 +84,10 @@ tagged **[chatgpt]** or **[databricks]**.
   (two-channel transport: the job payload carries the target sub-path). Stream
   passthrough + non-stream assembly + native `tool_calls`; validated with `pi`
   end-to-end. Databricks now serves Claude (Anthropic) **and** GPT-4.1 (OpenAI).
+  **Update (2026-07-12): `genie_framing.md` expanded into a full Claude-Code/
+  Codex-inspired agentic prompt** (tone, conventions, verification, tool-usage
+  policy, safety) while keeping the proven scope-guard-defeating identity
+  paragraph verbatim at the top; still layers under the caller's own system.
 - **[chatgpt]** `2026-07-10-thinking-effort.md` — **Reasoning effort.** `/backend-api/models`
   advertises per-model `configurable_thinking_effort` + `thinking_efforts`, and
   the `f/conversation` body carries a root `thinking_effort` on a 4-level ladder

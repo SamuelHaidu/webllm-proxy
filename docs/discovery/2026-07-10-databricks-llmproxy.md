@@ -508,3 +508,24 @@ So the Databricks provider now serves **Claude Sonnet 4.5** (Anthropic
 both with native tool calling. Client config for `pi`: add an
 `openai-completions` provider at `http://127.0.0.1:5103/v1` (see
 `~/.pi/agent/models.json` `databricks-openai`).
+
+## Update (2026-07-12) — `genie_framing.md` expanded into a full agentic prompt
+
+The original `_GENIE_SYSTEM` block (see "Fix 2" above) was a single paragraph
+whose only job was defeating the `editor-assistant-agent-mode` out-of-context
+guard. Expanded it into a fuller Claude-Code-shaped agentic system prompt
+(tone/style, proactiveness, following conventions, code style, task workflow +
+verification, tool usage policy, safety, code-reference format) while keeping
+the proven-effective identity/scope-guard paragraph verbatim at the top (the
+part actually load-bearing for defeating the guard, per Fix 2's bisection).
+Modeled on `anthropics/claude-code`'s production system prompt and
+`openai/codex`'s `codex-rs` prompt (root-cause fixes, minimal diffs, `git
+status`/diff sanity check before finishing), both via
+[tallesborges/agentic-system-prompts](https://github.com/tallesborges/agentic-system-prompts) —
+adapted, not copied verbatim (identity stays Genie/Databricks, not Claude Code
+or Codex; no TodoWrite-specific mechanics since Genie has no such tool).
+Still ordered `[Genie, style_rules, caller_system]` in `llmproxy.py`, so a
+caller's own system prompt (e.g. pi's) still layers on top and can override.
+No code changes — content-only edit to `webllm_proxy/prompts/genie_framing.md`;
+`tests/test_prompts.py`/`tests/test_databricks_body.py` only assert the
+`"Genie"` marker, unaffected.
