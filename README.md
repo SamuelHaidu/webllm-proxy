@@ -267,9 +267,30 @@ options, pick whichever fits:
    dir (`~/.cloakbrowser/...`) CloakBrowser's own lookup already checks, so
    no further env var is needed.
 
+   The bundle is **platform-specific** — it captures the build machine's
+   dependency wheels (e.g. `psutil` ships a compiled wheel) and its CloakBrowser
+   binary. Build it on the **same OS/arch as the target** (build on Windows for a
+   Windows target, not on Linux).
+
 `webllm-proxy install` prints this same guidance if a download fails, rather
 than dying silently. A Docker fallback image, `cloakhq/cloakbrowser`, also
 exists if none of the above fit your environment.
+
+### Keep local traffic off the corporate proxy (`NO_PROXY`)
+
+Once `HTTP_PROXY`/`HTTPS_PROXY` is set (so the browser can reach the internet),
+that same setting makes HTTP clients send **loopback** requests to the corporate
+proxy too — which cannot reach your own machine, so the local hops
+(client → gateway :5100 → per-provider proxy :510x) would fail. Set:
+
+```bash
+export NO_PROXY=127.0.0.1,localhost   # plus any existing entries
+```
+
+The gateway and the `research` CLI already bypass the proxy for loopback
+automatically (`infra/http_direct.py`), but **external clients** talking to the
+local API — `pi`, `curl`, the OpenAI/Anthropic SDKs — honor `NO_PROXY`, so set it
+for them.
 
 ## Docs
 
