@@ -39,23 +39,52 @@ class FakeTransport(Transport):
 
 def _m365_frames(text: str = "Hello world") -> list[str]:
     ack = "{}" + DELIM
-    update = json.dumps({"type": 1, "target": "update", "arguments": [
-        {"messages": [{"author": "bot", "messageType": "Chat", "text": text}]}]}) + DELIM
-    final = json.dumps({"type": 2, "item": {
-        "messages": [{"author": "user", "text": "hi"}, {"author": "bot", "text": text}],
-        "throttling": {"numUserMessagesInConversation": 1, "maxNumUserMessagesInConversation": 600},
-        "conversationId": "cid", "result": {"value": "Success"}}}) + DELIM
+    update = (
+        json.dumps(
+            {
+                "type": 1,
+                "target": "update",
+                "arguments": [
+                    {"messages": [{"author": "bot", "messageType": "Chat", "text": text}]}
+                ],
+            }
+        )
+        + DELIM
+    )
+    final = (
+        json.dumps(
+            {
+                "type": 2,
+                "item": {
+                    "messages": [{"author": "user", "text": "hi"}, {"author": "bot", "text": text}],
+                    "throttling": {
+                        "numUserMessagesInConversation": 1,
+                        "maxNumUserMessagesInConversation": 600,
+                    },
+                    "conversationId": "cid",
+                    "result": {"value": "Success"},
+                },
+            }
+        )
+        + DELIM
+    )
     return [ack, update, final]
 
 
 def _client(frames):
-    return Copilot(edition="m365", api_key="x", conversation="cid",
-                   transport_factory=lambda: FakeTransport(frames))
+    return Copilot(
+        edition="m365",
+        api_key="x",
+        conversation="cid",
+        transport_factory=lambda: FakeTransport(frames),
+    )
 
 
 def test_sync_non_streaming():
     client = _client(_m365_frames("Hello world"))
-    resp = client.chat.completions.create(model="think", messages=[{"role": "user", "content": "hi"}])
+    resp = client.chat.completions.create(
+        model="think", messages=[{"role": "user", "content": "hi"}]
+    )
     assert isinstance(resp, ChatCompletion)
     assert resp.choices[0].message.content == "Hello world"
     assert resp.content == "Hello world"
@@ -68,7 +97,8 @@ def test_sync_non_streaming():
 def test_sync_streaming():
     client = _client(_m365_frames("Hi there"))
     stream = client.chat.completions.create(
-        model="fast", messages=[{"role": "user", "content": "hi"}], stream=True)
+        model="fast", messages=[{"role": "user", "content": "hi"}], stream=True
+    )
     text = "".join(c.choices[0].delta.content or "" for c in stream)
     assert text == "Hi there"
     client.close()
@@ -76,8 +106,12 @@ def test_sync_streaming():
 
 def test_async_non_streaming():
     async def go():
-        client = AsyncCopilot(edition="m365", api_key="x", conversation="cid",
-                              transport_factory=lambda: FakeTransport(_m365_frames("yo")))
+        client = AsyncCopilot(
+            edition="m365",
+            api_key="x",
+            conversation="cid",
+            transport_factory=lambda: FakeTransport(_m365_frames("yo")),
+        )
         resp = await client.chat.completions.create(messages=[{"role": "user", "content": "hi"}])
         return resp.choices[0].message.content
 
@@ -94,12 +128,14 @@ def test_models_list_offline_fallback():
 
 
 def test_turn_and_model_mapping():
-    t = _turn([
-        {"role": "system", "content": "be terse"},
-        {"role": "user", "content": "a"},
-        {"role": "assistant", "content": "b"},
-        {"role": "user", "content": "c"},
-    ])
+    t = _turn(
+        [
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "user", "content": "c"},
+        ]
+    )
     assert t.startswith("[system] be terse") and t.endswith("c")
     assert _map_model("think") == Model.THINK
     assert _map_model("Gpt_5_5_Reasoning") == "Gpt_5_5_Reasoning"  # raw id passthrough
