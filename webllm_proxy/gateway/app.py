@@ -116,8 +116,12 @@ def _forward_by_model(ups: dict[str, Upstream], path: str):
 def _forward_to(ups: dict[str, Upstream], provider: str, path: str):
     up = ups.get(provider)
     if up is None:
-        body = {"error": {"message": f"the {provider} provider is not configured",
-                          "type": "invalid_request"}}
+        body = {
+            "error": {
+                "message": f"the {provider} provider is not configured",
+                "type": "invalid_request",
+            }
+        }
         return jsonify(body), 404
     return _stream(
         up.base_url + path,
