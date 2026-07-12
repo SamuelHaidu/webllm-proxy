@@ -9,6 +9,27 @@ export const PROVIDER = "webllm";
 export const CHATGPT_PREFIX = "chatgpt__";
 export const DATABRICKS_PREFIX = "databricks__";
 
+/**
+ * Local-tool policy for a pass-through command:
+ * - `"none"`  -- disable every local tool. For `/chatgpt`: chatgpt.com is a
+ *   plain web chat, nothing local can run against it.
+ * - `"all"`   -- keep every configured tool active. For `/genie`: the databricks
+ *   `llmproxy` channel executes NO server-side tools of its own (unlike the real
+ *   Genie UI's built-in tools), so the model can only *act* -- start compute,
+ *   run SQL via the `databricks` CLI, edit files -- if pi keeps its local tools
+ *   (bash/read/write/...) active. Disabling them leaves a talk-only model.
+ */
+export type ToolPolicy = "none" | "all";
+
+/**
+ * Resolve the active-tool name list for a pass-through, given every configured
+ * tool name. `"none"` -> `[]`; `"all"` -> a copy of every name (so the model can
+ * genuinely act). Pure so it unit-tests without the pi API.
+ */
+export function activeToolsFor(policy: ToolPolicy, allToolNames: string[]): string[] {
+  return policy === "none" ? [] : [...allToolNames];
+}
+
 /** Structural subset of a pi `Model` -- deliberately loose so this stays
  *  unit-testable without the SDK's real (generic) `Model<Api>` type. */
 export interface MinimalModel {

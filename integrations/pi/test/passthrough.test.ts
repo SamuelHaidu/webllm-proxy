@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CHATGPT_PREFIX,
   DATABRICKS_PREFIX,
+  activeToolsFor,
   candidateModels,
   pickModel,
   splitArgs,
@@ -55,6 +56,25 @@ describe("pickModel", () => {
 
   it("returns undefined when there are no candidates at all", () => {
     expect(pickModel(MODELS, "copilot__", "anything")).toBeUndefined();
+  });
+});
+
+describe("activeToolsFor", () => {
+  const ALL = ["bash", "read", "write", "edit", "grep"];
+
+  it("disables every tool for policy 'none' (chatgpt plain chat)", () => {
+    expect(activeToolsFor("none", ALL)).toEqual([]);
+  });
+
+  it("keeps every tool for policy 'all' (genie must be able to act)", () => {
+    expect(activeToolsFor("all", ALL)).toEqual(ALL);
+  });
+
+  it("returns a copy for 'all', not the original array", () => {
+    const out = activeToolsFor("all", ALL);
+    expect(out).not.toBe(ALL);
+    out.push("mutated");
+    expect(ALL).not.toContain("mutated");
   });
 });
 
