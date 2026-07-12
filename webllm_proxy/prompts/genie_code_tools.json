@@ -1,0 +1,270 @@
+[
+  {
+    "type": "custom",
+    "name": "askGenieSpace",
+    "description": "Ask a natural-language question to a specific Genie space and get AI-generated analysis. Genie will automatically generate and execute SQL queries, create visualizations, and provide insights based on the approved tables and business definitions in that space.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "The question that Genie should try to answer."
+        },
+        "dataroomId": {
+          "type": "string",
+          "description": "The short ID or UUID of the Genie data room to query."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "dataroomId"
+      ]
+    }
+  },
+  {
+    "type": "custom",
+    "name": "docSearch",
+    "description": "Search the public Databricks documentation for guidance on products, features, APIs, Spark (Python), SQL syntax, configs, troubleshooting, and best practices.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "searchQuery": {
+          "type": "string",
+          "description": "keywords used as search query. Does not support AND/OR operators, just a single query."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "searchQuery"
+      ]
+    }
+  },
+  {
+    "type": "custom",
+    "name": "readTable",
+    "description": "Get detailed information on a workspace SQL table like column types, comments, frequent queries, and joins. Specify the table as catalog.schema.name. When extraDetails is true, the result includes a metadata.properties map with Spark and Delta internals (e.g. spark.sql.statistics.*, delta.*); summarize its key entries in your reply.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "catalog": {
+          "type": "string",
+          "description": "Name of the catalog that contains the table to read (required).",
+          "minLength": 1
+        },
+        "schema": {
+          "type": "string",
+          "description": "Name of the schema (sometimes named database) that contains the table to read (required).",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "description": "The non-prefixed name of the table to read (required).",
+          "minLength": 1
+        },
+        "extraDetails": {
+          "type": "boolean",
+          "description": "If true, returns the full set of table properties as JSON (can be large). If false (default), returns a compact subset of table properties."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "catalog",
+        "schema",
+        "name",
+        "extraDetails"
+      ]
+    }
+  },
+  {
+    "type": "custom",
+    "name": "tableSearch",
+    "description": "Search for tables and datasets in the current workspace by keywords or natural language description. Do NOT use this tool if a fully qualified table name (catalog.schema.table) is already provided, use readTable instead to get table details directly.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "keywords": {
+          "type": "array",
+          "description": "Keywords to use for the table search",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "searchQuery": {
+          "type": "string",
+          "description": "Natural language description of what to look for. Be specific about the data characteristics, relationships, or business purpose. Example: \"a table that contains a mapping between user id and pseudo user id\"",
+          "minLength": 1
+        },
+        "dataCatalog": {
+          "type": "string",
+          "description": "Optional Data Catalog to search tables in (default \"\")"
+        },
+        "dataSchema": {
+          "type": "string",
+          "description": "Optional schema to search tables in (default \"\")"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "keywords",
+        "searchQuery",
+        "dataCatalog",
+        "dataSchema"
+      ]
+    }
+  },
+  {
+    "type": "custom",
+    "name": "querySearch",
+    "description": "Preferred tool to search for queries in the current workspace and provide their definition. When you use this tool, you should format your question/sentence as a how-to question and also provide specific keywords that match query names or content.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "sentence": {
+          "type": "string",
+          "description": "A how to question of what to look for. Be specific about the data characteristics, relationships, or business purpose. Example: \"how to map user id to pseudo user id\".",
+          "minLength": 1
+        },
+        "keywords": {
+          "type": "string",
+          "description": "Specific keywords that match query names or content. Example: \"user_id pseudo_user_id mapping\".",
+          "minLength": 1
+        },
+        "tablesToFilterOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Required table name array to filter on to scope down the search. Each value MUST be a fully qualified table name in the form <catalog>.<schema>.<table_name> \u2014 partial names, unqualified names, or any other format WILL CAUSE THE SEARCH TO FAIL. If not provided, use the tableSearch tool to gather relevant tables to provide as an argument here to improve the search accuracy. Only provide an empty array here if a preliminary table search was run and did not yield any relevant table names."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sentence",
+        "keywords",
+        "tablesToFilterOn"
+      ]
+    }
+  },
+  {
+    "type": "custom",
+    "name": "searchAssets",
+    "description": "Search for assets in the current workspace. Returns comprehensive search results for tables, queries, notebooks, dashboards, pipelines, jobs, datarooms, files, model serving endpoints, and New AI Gateway endpoints. Supports pagination - use the nextPageToken from response to get additional pages of results.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "searchQuery": {
+          "type": "string",
+          "description": "Keywords used as search query. Use an empty string to browse/list assets without keyword filtering (e.g. when listing all assets of a type). Does not support AND/OR operators."
+        },
+        "assetTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "notebooks",
+              "dashboards",
+              "pipelines",
+              "jobs",
+              "datarooms",
+              "files",
+              "alerts",
+              "apps",
+              "endpoints",
+              "aiGatewayEndpoints",
+              "models",
+              "folders"
+            ]
+          },
+          "description": "Array of asset types to search for. If not provided, searches all types."
+        },
+        "numResultsPerAssetType": {
+          "type": "number",
+          "description": "The number of results to return by asset type (max: 5).",
+          "default": 3
+        },
+        "sortBy": {
+          "type": "string",
+          "enum": [
+            "score",
+            "popularity",
+            "updated_at",
+            "name"
+          ],
+          "description": "How to sort the search results (default: score for relevance)."
+        },
+        "ownerOnly": {
+          "type": "boolean",
+          "description": "If true, restrict results to assets owned by the current user only."
+        },
+        "pageToken": {
+          "type": "string",
+          "description": "Token for paginating through search results. Use the nextPageToken from a previous search response to get the next page."
+        }
+      },
+      "additionalProperties": false,
+      "required": []
+    }
+  },
+  {
+    "type": "custom",
+    "name": "manageTodoList",
+    "description": "Manage a structured todo list to track progress and plan tasks throughout your coding session.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "write",
+            "read"
+          ],
+          "description": "write: Replace entire todo list with new content. read: Retrieve current todo list. ALWAYS provide complete list when writing - partial updates not supported."
+        },
+        "todoList": {
+          "type": "array",
+          "description": "Complete array of all todo items (required for write operation, ignored for read). Must include ALL items - both existing and new.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "number",
+                "description": "Unique identifier for the todo. Use sequential numbers starting from 1."
+              },
+              "title": {
+                "type": "string",
+                "description": "Concise action-oriented todo label (3-7 words). Displayed in UI."
+              },
+              "description": {
+                "type": "string",
+                "description": "Detailed context, requirements, or implementation notes. Include file paths, specific methods, or acceptance criteria."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "not-started",
+                  "in-progress",
+                  "completed"
+                ],
+                "description": "not-started: Not begun | in-progress: Currently working (max 1) | completed: Fully finished with no blockers"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "description",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "todoList"
+      ]
+    }
+  }
+]

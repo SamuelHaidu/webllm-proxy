@@ -11,6 +11,20 @@ tagged **[chatgpt]** or **[databricks]**.
 
 ## Entries
 
+- **[databricks]** `2026-07-12-genie-code-agent.md` — **Reproducing the real
+  Genie Code agent** (browser experience in the terminal via pi, tools executed
+  **remotely**, pi a thin client). Reverse-engineered from the real Genie Code
+  HAR: it's a **client-orchestrated loop** (`llmproxy` is model-only; the browser
+  executes each `tool_use` against a per-tool Databricks endpoint and feeds the
+  `tool_result` back), so the design is **proxy-as-orchestrator**. Captured the
+  real **37 KB system prompt** (stored sanitized at
+  `webllm_proxy/prompts/genie_code_system.md`) and the full **30-tool inventory**;
+  stored the **read-only subset** schemas (`docSearch`, `tableSearch`,
+  `querySearch`, `readTable`, `searchAssets`, `askGenieSpace`, `manageTodoList`)
+  at `genie_code_tools.json`. Only `docSearch` (→ `POST /graphql/DocsSearch__deduped`)
+  was exercised in the HAR, so it's the one fully spec'd executor (the template);
+  the other five need a fresh capture that triggers them. `executeCode` (notebook/
+  cluster) explicitly deferred.
 - **[ms365]** `2026-07-11-ms365-copilot-sydney.md` — **NEW TARGET candidate:
   Microsoft 365 Copilot (BizChat consumer)**, third potential backend.
   Pre-browser HAR scoping. The chat turn is a **SignalR ChatHub over WebSocket**
