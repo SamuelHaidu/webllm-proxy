@@ -6,6 +6,7 @@ from pathlib import Path
 from ...infra import env
 
 CHATGPT_URL = "https://chatgpt.com"
+NAV_URL = CHATGPT_URL + "/"
 
 PROFILE_DIR = Path(
     env.env_str("CHATGPT_PROXY_PROFILE") or (env.data_dir("chatgpt-proxy") / "profile")

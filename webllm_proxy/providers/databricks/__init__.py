@@ -10,9 +10,9 @@ Anthropic SDK) parses it directly.
 """
 
 import logging
-from pathlib import Path
 
-from ...domain.ports import Accumulator, PassthroughAccumulator, Provider
+from ...domain.ports import Accumulator, PassthroughAccumulator
+from ..base import BrowserProvider
 from . import config
 
 log = logging.getLogger(__name__)
@@ -47,35 +47,17 @@ async (arg) => {
 """
 
 
-class DatabricksProvider(Provider):
+class DatabricksProvider(BrowserProvider):
     name = "databricks"
-
-    def __init__(self, host: str | None = None, port: int | None = None):
-        self._host = host or config.HOST
-        self._port = port or config.PORT
-
-    # ---- config ----------------------------------------------------------
-    @property
-    def profile_dir(self) -> Path:
-        return config.PROFILE_DIR
+    config = config
 
     @property
     def nav_url(self) -> str:
+        # Override: the workspace URL (with ?o=) is required and has no static
+        # default, so raise a clear error instead of returning an empty NAV_URL.
         if not config.WORKSPACE_URL:
             raise RuntimeError("DATABRICKS_PROXY_URL is not set (workspace URL with ?o=).")
         return config.WORKSPACE_URL
-
-    @property
-    def headless(self) -> bool:
-        return config.HEADLESS
-
-    @property
-    def host(self) -> str:
-        return self._host
-
-    @property
-    def port(self) -> int:
-        return self._port
 
     # ---- browser hooks ---------------------------------------------------
     def authed(self, page) -> bool:

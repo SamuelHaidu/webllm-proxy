@@ -7,9 +7,9 @@ ChatGPT web's `thinking_effort`; the model is forced by rewriting the
 import base64
 import json
 import logging
-from pathlib import Path
 
-from ...domain.ports import Accumulator, Provider
+from ...domain.ports import Accumulator
+from ..base import BrowserProvider
 from . import config
 from .sse import StreamAccumulator
 
@@ -66,34 +66,13 @@ def _apply_overrides(body, forced_model, forced_effort, effort_support) -> bool:
     return changed
 
 
-class ChatGptProvider(Provider):
+class ChatGptProvider(BrowserProvider):
     name = "chatgpt"
+    config = config
 
     def __init__(self, host: str | None = None, port: int | None = None):
-        self._host = host or config.HOST
-        self._port = port or config.PORT
+        super().__init__(host, port)
         self._effort_support: dict[str, set[str]] = {}
-
-    # ---- config ----------------------------------------------------------
-    @property
-    def profile_dir(self) -> Path:
-        return config.PROFILE_DIR
-
-    @property
-    def nav_url(self) -> str:
-        return config.CHATGPT_URL + "/"
-
-    @property
-    def headless(self) -> bool:
-        return config.HEADLESS
-
-    @property
-    def host(self) -> str:
-        return self._host
-
-    @property
-    def port(self) -> int:
-        return self._port
 
     # ---- browser hooks ---------------------------------------------------
     def fetch_patterns(self):
