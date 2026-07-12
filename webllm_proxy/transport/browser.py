@@ -144,6 +144,11 @@ class BrowserSession:
         self._client.on("Network.dataReceived", self._on_data)
         self._client.on("Network.loadingFinished", self._on_fin)
         self._client.on("Network.loadingFailed", self._on_fail)
+        # WebSocket capture (providers whose answer streams over a WS, e.g.
+        # copilot's ChatHub) -- matched by the same `capture_match`.
+        self._client.on("Network.webSocketCreated", self._on_ws_created)
+        self._client.on("Network.webSocketFrameReceived", self._on_ws_frame)
+        self._client.on("Network.webSocketClosed", self._on_ws_closed)
         patterns = p.fetch_patterns()
         if patterns:
             self._client.send("Fetch.enable", {"patterns": patterns})
@@ -234,6 +239,27 @@ class BrowserSession:
             a["job"].out.put(("error", f"network loadingFailed: {p.get('errorText')}"))
             self._finish(a, done_already=True)
 
+    # ---- WebSocket capture (worker thread) -------------------------------
+    def _on_ws_created(self, p):
+        a = self._active
+        if not a or a["finished"]:
+            return
+        if self.provider.capture_match(p.get("url", "")):
+            a["ws"] = p.get("requestId")
+            a["job"].out.put(("meta", {"status": 200, "content_type": "text/event-stream"}))
+
+    def _on_ws_frame(self, p):
+        a = self._active
+        if a and not a["finished"] and p.get("requestId") == a.get("ws"):
+            payload = (p.get("response") or {}).get("payloadData", "")
+            if payload:
+                self._feed(a, payload)
+
+    def _on_ws_closed(self, p):
+        a = self._active
+        if a and not a["finished"] and p.get("requestId") == a.get("ws"):
+            self._finish(a)
+
     def _feed(self, a, text):
         if not text:
             return
@@ -289,6 +315,7 @@ class BrowserSession:
             "job": job,
             "acc": self.provider.make_accumulator(),
             "rid": None,
+            "ws": None,
             "finished": False,
         }
         a = self._active
@@ -320,7 +347,7 @@ class BrowserSession:
                 job.out.put(None)
                 a["finished"] = True
                 break
-            if a["rid"] is None and now > idle_deadline:
+            if a["rid"] is None and a.get("ws") is None and now > idle_deadline:
                 job.out.put(("error", "no response started"))
                 job.out.put(None)
                 a["finished"] = True

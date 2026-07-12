@@ -11,6 +11,39 @@ tagged **[chatgpt]** or **[databricks]**.
 
 ## Entries
 
+- **[ms365]** `2026-07-11-ms365-copilot-sydney.md` — **NEW TARGET candidate:
+  Microsoft 365 Copilot (BizChat consumer)**, third potential backend.
+  Pre-browser HAR scoping. The chat turn is a **SignalR ChatHub over WebSocket**
+  to `substrate.office.com/m365Copilot/Chathub/{conversationId}` (the "Sydney"
+  backend), authorized by an **OAuth Bearer** token (scope
+  `substrate.office.com/sydney/v2/.default`, MSAL, consumer tenant
+  `9188040d-...`), **no Turnstile/PoW**. Trouter (`*.trouter.skype.com`,
+  `appId: bizchat`) is the async notify channel. The HAR has **no** chat
+  completion body (answer text absent everywhere; no `wss://`/101 recorded) —
+  proof the stream is WS frames, which the current HTTP-only CDP transport
+  doesn't capture. Capability manifest gives the model selector
+  (`Magic`/`Chat`/`Reasoning`/`Gpt_5_5_*` = Auto/Quick/Think Deeper/GPT-5.5) and
+  server-side tool toggles (`executionControls`: connectors/work/web/
+  personalOneDrive/builtInPlugins/localDevice) — **extensibility disabled**, so
+  it maps to a **chat model, not a native `tool_use` agent backend** like
+  Databricks. Verdict: bridgeable but hardest of the three; blocker is
+  engineering (add WebSocket-frame capture + reverse the ChatHub SignalR schema
+  live), not anti-bot. **Update (same day): full ChatHub WebSocket protocol
+  captured** from a second HAR (WS frames under `_webSocketMessages`) — it's the
+  standard **Sydney/BingChat SignalR** protocol: `type:4 target:"chat"`
+  invocation (`message.text`, `tone`=model, `plugins`+`optionsSets`=tools),
+  cumulative `update` text deltas, final `StreamItem`+`Completion` (carries the
+  full answer). Added `ws`/`wsshow` subcommands to `scripts/har_explore.py`
+  (SignalR-aware, redaction of `access_token`/`signature`). Only token+
+  conversationId acquisition and off-browser replay-binding remain to confirm
+  live. **Update 2: captured the consumer `copilot.microsoft.com` variant** (a
+  third edition, newer **event-JSON** protocol on `/c/api/chat`: `send`/
+  `appendText`/`done`, in-band **hashcash** PoW + Cloudflare Turnstile) and
+  **shipped two deliverables** — `docs/protocol/copilot-protocol.md` (full spec
+  for both wire protocols + all three editions) and **`unicopilot/`**, a
+  detachable universal client (edition-agnostic core; `SignalRCodec`/`EventCodec`
+  validated to decode the real captured frames exactly — M365 993-char and
+  consumer 1587-char answers reconstructed).
 - **[chatgpt]** `2026-07-11-deep-research-scoping.md` — **Scoping note, not a
   trigger.** Explains why the research-job feature's Deep Research backend
   ships as a documented stub (`available()` hardcoded `False`) rather than a

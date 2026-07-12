@@ -23,6 +23,11 @@ webllm-proxy = "webllm_proxy.__main__:main"
 [project.urls]
 Documentation = "https://github.com/CloakHQ/CloakBrowser"
 
+[project.optional-dependencies]
+copilot = [
+    "websockets>=16.1",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -83,7 +88,16 @@ max-args = 6
 # One-off reverse-engineering/dev scripts (not shipped, not imported by the
 # package) -- see docs/discovery/. Held to a looser bar than webllm_proxy/.
 "scripts/*" = [
-    "C901", "PLR2004", "PLC0415", "E501", "SIM103", "RET504", "PTH123", "RUF059", "UP015",
+    "C901", "PLR2004", "PLC0415", "E501", "SIM103", "RET504", "PTH123", "RUF059", "UP015", "E702",
+    "PLW2901",
+]
+# The copilot provider is a self-contained, detachable library (moved in from a
+# standalone package): intentional lazy imports (websockets/httpx), compact
+# protocol-codec branching, enum-keyed class-level maps, and grouped __all__.
+# Held to the same pragmatic bar as scripts/ and the route modules.
+"webllm_proxy/providers/copilot/**" = [
+    "E501", "E702", "PLC0415", "PLR2004", "C901", "PLR0911", "PLR0912",
+    "PLR0913", "PLR0915", "PLR1714", "PLW2901", "RUF012", "RUF022",
 ]
 
 [tool.poe.tasks]

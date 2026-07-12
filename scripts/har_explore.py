@@ -31,7 +31,7 @@ SECRET_HEADER = re.compile(
 SECRET_KEY = re.compile(
     r"(token|secret|password|passwd|authorization|cookie|api[-_]?key"
     r"|access[-_]?token|refresh[-_]?token|bearer|session[-_]?id|credential"
-    r"|client[-_]?secret|private[-_]?key)",
+    r"|client[-_]?secret|private[-_]?key|signature|encrypted)",
     re.I,
 )
 
@@ -88,6 +88,20 @@ def load(path):
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         data = json.load(f)
     return data["log"]["entries"]
+
+
+def redact_url(url):
+    """Redact secret-looking query param values (access_token, sig, ...)."""
+    sp = urlsplit(url)
+    if not sp.query:
+        return url
+    from urllib.parse import parse_qsl, urlencode, urlunsplit
+    q = []
+    for k, v in parse_qsl(sp.query, keep_blank_values=True):
+        if SECRET_KEY.search(k) or k.lower() in ("sig", "sp", "st", "se", "skoid"):
+            v = f"<redacted len={len(v)}>"
+        q.append((k, v))
+    return urlunsplit((sp.scheme, sp.netloc, sp.path, urlencode(q, safe="<>= "), sp.fragment))
 
 
 def short_url(url, n=70):
@@ -251,6 +265,85 @@ def cmd_keys(entries, a):
         print(f"(not JSON: {ex}) first 300 chars:\n{text[:300]}")
 
 
+# --- WebSocket frames (Chrome HAR: entry["_webSocketMessages"]) -------------
+SIGNALR_TYPE = {
+    1: "Invocation", 2: "StreamItem", 3: "Completion", 4: "StreamInvocation",
+    5: "CancelInvocation", 6: "Ping", 7: "Close",
+}
+_RS = "\x1e"  # SignalR json-protocol record separator
+
+
+def ws_entries(entries):
+    return [(i, e) for i, e in enumerate(entries) if e.get("_webSocketMessages")]
+
+
+def split_signalr(data):
+    return [p for p in (data or "").split(_RS) if p.strip()]
+
+
+def ws_label(rec_text):
+    """(short label, parsed-obj-or-None) for one SignalR record."""
+    try:
+        obj = json.loads(rec_text)
+    except Exception:
+        return (rec_text[:60].replace("\n", " "), None)
+    if not isinstance(obj, dict):
+        return (str(obj)[:60], obj)
+    t = obj.get("type")
+    tag = SIGNALR_TYPE.get(t, f"type={t}" if t is not None else "handshake?")
+    tgt = obj.get("target")
+    if tgt:
+        tag += f" {tgt}"
+    return (tag, obj)
+
+
+def cmd_ws(entries, a):
+    wes = ws_entries(entries)
+    if not wes:
+        print("(no _webSocketMessages in this HAR)")
+        return
+    idx = a.n if a.n is not None else wes[0][0]
+    e = entries[idx]
+    msgs = e.get("_webSocketMessages") or []
+    print(f"### entry [{idx}] {redact_url(e['request']['url'])}")
+    print(f"# {len(msgs)} frames  (send=client->server, receive=server->client)")
+    shown = 0
+    for mi, m in enumerate(msgs):
+        direction = m.get("type")
+        if a.dir and direction != a.dir:
+            continue
+        data = m.get("data", "")
+        recs = split_signalr(data)
+        labels = " | ".join(ws_label(r)[0] for r in recs)
+        arrow = "->S" if direction == "send" else "S->"
+        print(f"[{mi:3d}] {arrow} bytes={len(data):6d} recs={len(recs):2d}  {labels[:110]}")
+        shown += 1
+        if a.limit and shown >= a.limit:
+            print(f"... (--limit {a.limit} reached)")
+            break
+
+
+def cmd_wsshow(entries, a):
+    e = entries[a.n]
+    msgs = e.get("_webSocketMessages") or []
+    if not msgs:
+        print("(no _webSocketMessages on this entry)")
+        return
+    m = msgs[a.msg]
+    data = m.get("data", "")
+    do_r = not a.no_redact
+    print(f"### entry [{a.n}] frame [{a.msg}] dir={m.get('type')} "
+          f"opcode={m.get('opcode')} bytes={len(data)}")
+    for ri, r in enumerate(split_signalr(data)):
+        try:
+            obj = json.loads(r)
+            out = json.dumps(redact_json(obj) if do_r else obj, indent=2, ensure_ascii=False)
+        except Exception:
+            out = redact_body(r, "text", do_r)
+        print(f"\n--- record {ri} ---")
+        print(out[: a.max])
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -292,6 +385,19 @@ def main():
     sp.add_argument("n", type=int)
     sp.add_argument("which", nargs="?", choices=["req", "resp"], default="resp")
     sp.set_defaults(fn=cmd_keys)
+
+    sp = sub.add_parser("ws", help="list WebSocket frames of an entry (SignalR-aware)")
+    sp.add_argument("n", type=int, nargs="?", default=None, help="entry index (default: first WS entry)")
+    sp.add_argument("--dir", choices=["send", "receive"], default=None)
+    sp.add_argument("--limit", type=int, default=100)
+    sp.set_defaults(fn=cmd_ws)
+
+    sp = sub.add_parser("wsshow", help="show one WebSocket frame's records (redacted)")
+    sp.add_argument("n", type=int, help="entry index")
+    sp.add_argument("msg", type=int, help="frame index within the entry")
+    sp.add_argument("--max", type=int, default=8000)
+    sp.add_argument("--no-redact", action="store_true")
+    sp.set_defaults(fn=cmd_wsshow)
 
     a = p.parse_args()
     entries = load(a.file)
