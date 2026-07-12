@@ -12,6 +12,8 @@ import urllib.request
 from collections.abc import Iterator
 from typing import Any
 
+from ..infra.http_direct import urlopen as _urlopen
+
 
 def _load(raw: bytes) -> Any:
     try:
@@ -30,7 +32,7 @@ def get_json(url: str, timeout: float = 10.0) -> tuple[int, Any]:
     is returned as a normal (status, body) result."""
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen(req, timeout=timeout) as resp:
             return _status(resp), _load(resp.read())
     except urllib.error.HTTPError as e:
         return e.code, _load(e.read())
@@ -49,7 +51,7 @@ def open_forward(
     for >=400). Raises `urllib.error.URLError` if the host is unreachable."""
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        return _urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
         return e
 

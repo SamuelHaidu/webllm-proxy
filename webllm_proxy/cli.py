@@ -126,10 +126,12 @@ def _install() -> int:
 
 
 def _research_request(url: str, *, data: bytes | None = None, method: str | None = None) -> dict:
+    from .infra.http_direct import urlopen
+
     req = urllib.request.Request(
         url, data=data, method=method, headers={"Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
 
