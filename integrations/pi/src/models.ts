@@ -17,6 +17,12 @@ export interface GatewayModel {
    *  Anthropic-Messages-only (the gateway's /v1/messages) -- e.g. databricks'
    *  Claude models, which 404 on /v1/chat/completions. */
   _wire?: "openai" | "anthropic";
+  /** Whether the upstream declares this model reasoning/extended-thinking
+   *  capable. Authoritative when present (the proxy knows its models); when
+   *  absent we fall back to the id/title heuristic (`isReasoning`). This is what
+   *  makes pi actually emit a `thinking` block -- e.g. databricks' Claude, whose
+   *  id has no "think"/"reason" keyword for the heuristic to catch. */
+  _reasoning?: boolean;
   object?: string;
 }
 
@@ -63,7 +69,7 @@ export function mapModel(model: GatewayModel, gatewayRoot?: string): PiModel {
   return {
     id: model.id,
     name: model._title ?? model.id,
-    reasoning: isReasoning(model),
+    reasoning: model._reasoning ?? isReasoning(model),
     input: ["text"],
     cost: { ...ZERO_COST },
     contextWindow: DEFAULT_CONTEXT,

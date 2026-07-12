@@ -47,6 +47,24 @@ describe("_wire handling", () => {
   });
 });
 
+describe("_reasoning handling", () => {
+  it("uses the explicit _reasoning=true hint even when the id has no keyword", () => {
+    // databricks Claude: no "think"/"reason" in the id, but the proxy declares it.
+    const m = mapModel({ id: "databricks__claude-4-5-sonnet", _reasoning: true });
+    expect(m.reasoning).toBe(true);
+  });
+
+  it("uses the explicit _reasoning=false hint even when the id has a keyword", () => {
+    const m = mapModel({ id: "databricks__reasoner-x", _reasoning: false });
+    expect(m.reasoning).toBe(false);
+  });
+
+  it("falls back to the id/title heuristic when _reasoning is absent", () => {
+    expect(mapModel({ id: "chatgpt__gpt-5-thinking" }).reasoning).toBe(true);
+    expect(mapModel({ id: "chatgpt__gpt-4o" }).reasoning).toBe(false);
+  });
+});
+
 describe("isReasoning", () => {
   it("detects think/reason/research/deep variants", () => {
     expect(isReasoning({ id: "copilot__think" })).toBe(true);
