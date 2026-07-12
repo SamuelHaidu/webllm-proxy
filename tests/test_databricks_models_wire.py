@@ -27,6 +27,17 @@ def test_models_tags_claude_anthropic_and_azure_openai(monkeypatch):
     assert by_id["gpt-41-2025-04-14"]["_wire"] == "openai"
 
 
+def test_models_tag_reasoning_and_max_tokens(monkeypatch):
+    # Claude (Anthropic channel) supports extended thinking and carries a
+    # realistic output cap; Azure GPT-4.1 does not reason. Without these hints,
+    # pi never sends a `thinking` block for Claude (effort becomes a no-op).
+    client = _app(monkeypatch, ["claude-4-5-sonnet"], ["gpt-41-2025-04-14"])
+    by_id = {m["id"]: m for m in client.get("/v1/models").get_json()["data"]}
+    assert by_id["claude-4-5-sonnet"]["_reasoning"] is True
+    assert by_id["claude-4-5-sonnet"]["_max_tokens"] == config.CLAUDE_MAX_TOKENS
+    assert by_id["gpt-41-2025-04-14"]["_reasoning"] is False
+
+
 def test_models_empty_lists(monkeypatch):
     client = _app(monkeypatch, [], [])
     body = client.get("/v1/models").get_json()

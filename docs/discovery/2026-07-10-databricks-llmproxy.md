@@ -529,3 +529,48 @@ caller's own system prompt (e.g. pi's) still layers on top and can override.
 No code changes — content-only edit to `webllm_proxy/prompts/genie_framing.md`;
 `tests/test_prompts.py`/`tests/test_databricks_body.py` only assert the
 `"Genie"` marker, unaffected.
+
+## Update (2026-07-12) — Claude answered too fast: pi wasn't sending `thinking`
+
+Symptom: Claude Sonnet 4.5 over the gateway/`webllm` provider replied instantly
+and shallow — pi's effort/thinking setting had no effect. Root cause is entirely
+client-side metadata, traced through pi's own source
+(`@earendil-works/pi-ai/dist/api/anthropic-messages.js`):
+
+- `buildParams()` only ever attaches a `thinking` block **when
+  `model.reasoning` is truthy** (the `if (model.reasoning) { ... }` gate). If a
+  model is advertised `reasoning: false`, pi sends **no** `thinking` field no
+  matter the effort level — so Claude runs non-extended, i.e. fast/shallow.
+- Our gateway→pi model mapper (`integrations/pi/src/models.ts`) set `reasoning`
+  from a **name heuristic** (`/think|reason|research|deep|\bo[134]\b/`) built for
+  ChatGPT slugs. `databricks__claude-4-5-sonnet` matches none of those → it was
+  advertised `reasoning: false`. The effort extension was fine; our metadata lied.
+- Second, subtler throttle: even with reasoning on, pi derives the thinking
+  budget from the model's `maxTokens` (`adjustMaxTokensForThinking` in
+  `simple-options.js`): `budget` is capped so `budget < maxTokens`. We advertised
+  no `_max_tokens`, so Claude defaulted to **8192**, squeezing a `high`-effort
+  16384 budget down to ~7168. The channel accepts up to 64000 (proven above).
+
+Fix — the proxy now **declares** these on `GET /v1/models` (same philosophy as
+the `_wire` tag), rather than relying on the client's name heuristic:
+- `webllm_proxy/http/anthropic_routes.py`: each Claude model carries
+  `_reasoning: true` + `_max_tokens: CLAUDE_MAX_TOKENS` (64000, env-overridable
+  via `DATABRICKS_PROXY_CLAUDE_MAX_TOKENS`); GPT-4.1 carries `_reasoning: false`.
+- `integrations/pi/src/models.ts`: `mapModel` now uses `model._reasoning ??
+  isReasoning(model)` (explicit hint wins; heuristic is the fallback for
+  upstreams that don't declare it, e.g. chatgpt). `_max_tokens` was already
+  consumed.
+
+Verified against pi's source + unit tests (`tests/test_databricks_models_wire.py`,
+`integrations/pi/test/models.test.ts`). **Not yet live-verified end-to-end** (no
+`DATABRICKS_PROXY_URL` in this session to boot the browser-backed proxy). Two
+residual risks to watch on the first live thinking call, both surfacing as the
+channel's signature **empty-body 400** on an unrecognized field (cf.
+`_DROP_TOOL_FIELDS` / `eager_input_streaming`): (1) `thinking.display`
+(a newer Anthropic sub-field pi always sets to `"summarized"`), and (2) a
+`thinking: {"type": "disabled"}` block pi sends when reasoning is on but effort
+is off. The 2026-07-10 end-to-end run above *did* drive pi with thinking enabled
+(budget 16384, max_tokens 64000) successfully, which is positive evidence (1) is
+fine; if either 400s, strip it in `llmproxy.build_llmproxy_body` (dropping
+`display` falls back to the same default; dropping a disabled block equals
+sending none) — both behavior-preserving.

@@ -43,6 +43,14 @@ ENABLED_MODELS = [
     if m.strip()
 ]
 
+# Advertised max output tokens for the Claude (Anthropic) channel, surfaced on
+# GET /v1/models as `_max_tokens`. Claude reasoning eats into max_tokens (a
+# client's thinking budget must fit under it), so a realistic cap matters: pi
+# derives the thinking budget from this, and an 8k default would throttle
+# high-effort thinking to ~7k. 64000 is the proven ceiling on this channel
+# (see docs/discovery/2026-07-10-databricks-llmproxy.md).
+CLAUDE_MAX_TOKENS = env.env_int("DATABRICKS_PROXY_CLAUDE_MAX_TOKENS", 64000)
+
 # Azure OpenAI channel: a second llmproxy sub-path (`proxy/chat/completions`)
 # serving this account's enabled GPT-4.1 deployments. OpenAI-shaped request +
 # streaming SSE; envelope is `{params, metadata.clientId, @method, deployment,

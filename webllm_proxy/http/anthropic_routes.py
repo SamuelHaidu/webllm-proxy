@@ -21,11 +21,24 @@ def register_databricks(app, session, provider) -> None:
         # actually needs: ENABLED_MODELS (Claude) are Anthropic-Messages-only
         # (this route); OPENAI_MODELS (Azure GPT-4.1) only work via
         # /v1/chat/completions (see openai_routes.register_databricks_openai).
+        # `_reasoning` tells them the model supports extended thinking: Claude
+        # does, GPT-4.1 does not. A consumer that doesn't advertise this (e.g.
+        # pi) would never send a `thinking` block, so effort/reasoning is a
+        # silent no-op -- the Claude id has no "think"/"reason" keyword for a
+        # name-based heuristic to catch. `_max_tokens` gives the thinking budget
+        # room to breathe (see CLAUDE_MAX_TOKENS).
         data = [
-            {"type": "model", "id": m, "display_name": m, "_wire": "anthropic"}
+            {
+                "type": "model",
+                "id": m,
+                "display_name": m,
+                "_wire": "anthropic",
+                "_reasoning": True,
+                "_max_tokens": config.CLAUDE_MAX_TOKENS,
+            }
             for m in config.ENABLED_MODELS
         ] + [
-            {"type": "model", "id": m, "display_name": m, "_wire": "openai"}
+            {"type": "model", "id": m, "display_name": m, "_wire": "openai", "_reasoning": False}
             for m in config.OPENAI_MODELS
         ]
         return jsonify(
