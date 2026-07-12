@@ -14,9 +14,9 @@ from dataclasses import dataclass, field
 class Model(enum.Enum):
     """Normalized model/effort selector, mapped per edition (`tone`/`mode`)."""
 
-    AUTO = "auto"       # let the service decide (M365 `Magic`, consumer `smart`)
-    FAST = "fast"       # quick, no reasoning (M365 `Chat`)
-    THINK = "think"     # reasoning / "think deeper" (M365 `Reasoning`)
+    AUTO = "auto"  # let the service decide (M365 `Magic`, consumer `smart`)
+    FAST = "fast"  # quick, no reasoning (M365 `Chat`)
+    THINK = "think"  # reasoning / "think deeper" (M365 `Reasoning`)
     RESEARCH = "research"  # deep research (consumer `deep-research`)
 
 
@@ -25,12 +25,12 @@ class ModelInfo:
     """A concrete, edition-specific model/mode the service currently offers.
     Discovered from the edition's capability document, not hardcoded."""
 
-    id: str                       # wire value: M365 `tone` / consumer `mode`
-    title: str | None = None      # human label ("Think Deeper")
+    id: str  # wire value: M365 `tone` / consumer `mode`
+    title: str | None = None  # human label ("Think Deeper")
     description: str | None = None
-    reasoning: bool = False       # a "thinking"/extended-reasoning model
-    family: str | None = None     # e.g. "gpt-5.5"
-    default: bool = False         # the service's default selection
+    reasoning: bool = False  # a "thinking"/extended-reasoning model
+    family: str | None = None  # e.g. "gpt-5.5"
+    default: bool = False  # the service's default selection
 
 
 @dataclass(slots=True)
@@ -52,11 +52,7 @@ class Throttling:
 
     @property
     def at_limit(self) -> bool:
-        return (
-            self.used is not None
-            and self.maximum is not None
-            and self.used >= self.maximum
-        )
+        return self.used is not None and self.maximum is not None and self.used >= self.maximum
 
 
 # ---- streamed events -------------------------------------------------------

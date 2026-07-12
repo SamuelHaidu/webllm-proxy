@@ -81,14 +81,13 @@ def register_copilot(app, session, provider) -> None:
 
         lock.acquire()
         try:
-            out_q = session.submit(
-                ChatTurn(text, req_model, _is_new_conversation(messages))
-            )
+            out_q = session.submit(ChatTurn(text, req_model, _is_new_conversation(messages)))
         except Exception as e:
             lock.release()
             return jsonify({"error": {"message": str(e)}}), 500
 
         if stream:
+
             def gen():
                 yield wire_openai.chunk(cid, created, resp_model, {"role": "assistant"})
                 while True:
@@ -122,15 +121,19 @@ def register_copilot(app, session, provider) -> None:
             lock.release()
         if err and not content:
             return jsonify({"error": {"message": err, "type": "upstream_error"}}), 502
-        return jsonify({
-            "id": cid,
-            "object": "chat.completion",
-            "created": created,
-            "model": resp_model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": content or None},
-                "finish_reason": finish,
-            }],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        })
+        return jsonify(
+            {
+                "id": cid,
+                "object": "chat.completion",
+                "created": created,
+                "model": resp_model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content or None},
+                        "finish_reason": finish,
+                    }
+                ],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+        )

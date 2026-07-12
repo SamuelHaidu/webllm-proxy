@@ -127,9 +127,14 @@ class ModelsPage:
 
 # ---- mapping helpers -------------------------------------------------------
 _ALIASES = {
-    "auto": Model.AUTO, "fast": Model.FAST, "quick": Model.FAST,
-    "think": Model.THINK, "reasoning": Model.THINK, "smart": Model.AUTO,
-    "research": Model.RESEARCH, "deep-research": Model.RESEARCH,
+    "auto": Model.AUTO,
+    "fast": Model.FAST,
+    "quick": Model.FAST,
+    "think": Model.THINK,
+    "reasoning": Model.THINK,
+    "smart": Model.AUTO,
+    "research": Model.RESEARCH,
+    "deep-research": Model.RESEARCH,
 }
 
 
@@ -154,8 +159,10 @@ def _turn(messages: list[dict]) -> str:
     last_user: str | None = None
     for m in messages:
         content = m.get("content")
-        text = content if isinstance(content, str) else "".join(
-            p.get("text", "") for p in (content or []) if isinstance(p, dict)
+        text = (
+            content
+            if isinstance(content, str)
+            else "".join(p.get("text", "") for p in (content or []) if isinstance(p, dict))
         )
         if m.get("role") == "system":
             systems.append(text)
@@ -168,21 +175,26 @@ def _turn(messages: list[dict]) -> str:
 
 def _completion(final: Final, model: str | Model) -> ChatCompletion:
     msg = ChatMessage(
-        role="assistant", content=final.text or "",
+        role="assistant",
+        content=final.text or "",
         citations=list(final.citations),
         suggestions=[s.text for s in final.suggestions],
     )
     return ChatCompletion(
-        id=f"chatcmpl-{uuid.uuid4().hex[:24]}", model=_model_str(model),
-        created=int(time.time()), choices=[Choice(0, msg, "stop")],
-        conversation_id=final.conversation_id, title=final.title,
+        id=f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        model=_model_str(model),
+        created=int(time.time()),
+        choices=[Choice(0, msg, "stop")],
+        conversation_id=final.conversation_id,
+        title=final.title,
         throttling=final.throttling,
     )
 
 
 def _chunk(model, *, content=None, role=None, finish_reason=None) -> ChatCompletionChunk:
     return ChatCompletionChunk(
-        id=f"chatcmpl-{uuid.uuid4().hex[:24]}", model=_model_str(model),
+        id=f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        model=_model_str(model),
         created=int(time.time()),
         choices=[ChunkChoice(0, ChoiceDelta(role=role, content=content), finish_reason)],
     )
@@ -227,6 +239,7 @@ class _AsyncCompletions:
                     role = None
                 elif isinstance(ev, Final):
                     yield _chunk(model, finish_reason="stop")
+
         return gen()
 
 
@@ -264,12 +277,21 @@ class AsyncCopilot:
     """Async client, mirrors `openai.AsyncOpenAI`."""
 
     def __init__(
-        self, *, edition="m365", api_key=None, conversation=None, credential=None,
-        token_param=None, transport_factory=WebsocketsTransport, http=None,
+        self,
+        *,
+        edition="m365",
+        api_key=None,
+        conversation=None,
+        credential=None,
+        token_param=None,
+        transport_factory=WebsocketsTransport,
+        http=None,
     ):
         self._core = CopilotClient(
-            edition, _make_credential(edition, api_key, credential, token_param),
-            transport_factory=transport_factory, http=http,
+            edition,
+            _make_credential(edition, api_key, credential, token_param),
+            transport_factory=transport_factory,
+            http=http,
         )
         self._conversation = conversation
         self.chat = _AsyncChat(self)
@@ -289,7 +311,9 @@ class AsyncCopilot:
 class _Loop:
     def __init__(self):
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._loop.run_forever, name="copilot-sdk", daemon=True)
+        self._thread = threading.Thread(
+            target=self._loop.run_forever, name="copilot-sdk", daemon=True
+        )
         self._thread.start()
 
     def run(self, coro):
