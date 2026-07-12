@@ -13,6 +13,18 @@ providers ship today:
 
 CLI: `webllm-proxy serve|login|install --provider chatgpt|databricks`.
 
+## pi integration (`integrations/pi/`)
+
+A TypeScript **pi** package (`@earendil-works/pi-coding-agent`) that surfaces this
+proxy inside the `pi` coding agent: it registers a `webllm` provider whose models
+are auto-discovered from the **aggregator gateway** and adds agent tools. Start
+the gateway with `webllm-proxy gateway` (default `:5100`); it fronts every
+running per-provider proxy on one OpenAI/Anthropic surface, merging their
+`/v1/models` (ids namespaced `<provider>__<slug>`) and routing by that prefix
+(`webllm_proxy/gateway/`, a pure forwarder -- no browser). pi API/SDK reference
+map: `docs/pi/pi-extension-sdk-index.md`. Full roadmap lives in the plan file +
+`integrations/pi/README.md`.
+
 Started 2026-07-10 as a ChatGPT-only tool (`chatgpt-web-proxy`); unified into
 the current multi-provider shape the same day. Earlier DOM-scraping prototypes
 (`chatgpt_api_server.py`, `manual_login.py`, a Go/CDP port, a React frontend)
