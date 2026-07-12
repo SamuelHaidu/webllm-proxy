@@ -29,6 +29,7 @@ Usage:
 
 Prints only status + classification + a short redacted reason; never tokens.
 """
+
 import sys
 import time
 import uuid
@@ -42,13 +43,26 @@ CHAT_PATH = "/ajax-api/2.0/conversation/proxy/chat/completions"
 
 # Default candidate registrations to try, per channel (extend via CLI arg 2).
 DEFAULT_ANTHROPIC = [
-    "claude-4-5-sonnet", "claude-sonnet-4-5", "claude-4-5-haiku", "claude-4-5-opus",
-    "claude-4-sonnet", "claude-4-opus", "claude-4-1-opus", "claude-3-7-sonnet",
-    "claude-3-5-sonnet", "gemini-2-5-pro", "llama-3-3-70b", "llama-3-1-405b",
+    "claude-4-5-sonnet",
+    "claude-sonnet-4-5",
+    "claude-4-5-haiku",
+    "claude-4-5-opus",
+    "claude-4-sonnet",
+    "claude-4-opus",
+    "claude-4-1-opus",
+    "claude-3-7-sonnet",
+    "claude-3-5-sonnet",
+    "gemini-2-5-pro",
+    "llama-3-3-70b",
+    "llama-3-1-405b",
 ]
 DEFAULT_AZURE = [
-    "gpt-41-2025-04-14", "gpt-41-mini-2025-04-14", "gpt-4o-2024-11-20",
-    "gpt-4o-mini", "gpt-5", "o3-mini",
+    "gpt-41-2025-04-14",
+    "gpt-41-mini-2025-04-14",
+    "gpt-4o-2024-11-20",
+    "gpt-4o-mini",
+    "gpt-5",
+    "o3-mini",
 ]
 
 # In-page: read a fresh CSRF token, POST the candidate body, return status+body.
@@ -69,29 +83,40 @@ def anthropic_body(model):
     return {
         "system": [{"type": "text", "text": "hi"}],
         "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 8, "stream": False,
+        "max_tokens": 8,
+        "stream": False,
         "_llmproxy_fields": {
-            "model_registration": model, "endpoint": "anthropic/v1/messages",
-            "agent_name": "GenieCodeFullChat", "client_id": "editor-assistant-agent-mode",
-            "trace_id": str(uuid.uuid4()), "call_id": str(uuid.uuid4()),
+            "model_registration": model,
+            "endpoint": "anthropic/v1/messages",
+            "agent_name": "GenieCodeFullChat",
+            "client_id": "editor-assistant-agent-mode",
+            "trace_id": str(uuid.uuid4()),
+            "call_id": str(uuid.uuid4()),
         },
     }
 
 
 def azure_body(model):
     return {
-        "params": {"messages": [{"role": "user", "content": "hi"}], "model": model,
-                   "temperature": 0, "stream": False},
+        "params": {
+            "messages": [{"role": "user", "content": "hi"}],
+            "model": model,
+            "temperature": 0,
+            "stream": False,
+        },
         "metadata": {"traceId": str(uuid.uuid4()), "clientId": "auto-rename-action"},
         "@method": "openAiServiceChatCompletionRequest",
-        "deployment": model, "model": model, "apiVersion": "2025-01-01-preview",
+        "deployment": model,
+        "model": model,
+        "apiVersion": "2025-01-01-preview",
     }
 
 
 def classify(status, body):
     b = (body or "").lower()
-    if status == 200 and any(k in body for k in
-                             ('"completion"', "message_start", '"choices"', '"content"')):
+    if status == 200 and any(
+        k in body for k in ('"completion"', "message_start", '"choices"', '"content"')
+    ):
         return "WORKS", ""
     if any(k in b for k in ("model_disabled", "permission_denied", "failed check: mec")):
         return "DISABLED", "registered but clientId not entitled"
@@ -126,9 +151,11 @@ def main():
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(config.WORKSPACE_URL, wait_until="domcontentloaded", timeout=60000)
         time.sleep(4)
-        uid = page.evaluate("async()=>{try{const r=await fetch('/auth/session/info',"
-                            "{credentials:'include'});return (await r.json()).userId||null;}"
-                            "catch(e){return null;}}")
+        uid = page.evaluate(
+            "async()=>{try{const r=await fetch('/auth/session/info',"
+            "{credentials:'include'});return (await r.json()).userId||null;}"
+            "catch(e){return null;}}"
+        )
         if not uid:
             sys.exit("NOT logged in — run `webllm-proxy login --provider databricks` first.")
         print("authenticated: yes\n")

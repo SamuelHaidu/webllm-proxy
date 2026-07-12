@@ -16,6 +16,7 @@ Usage:
   har_explore.py FILE grep PATTERN [--in url|req|resp|all] [--limit N]
   har_explore.py FILE keys N [req|resp]                # JSON key tree of a body
 """
+
 import argparse
 import json
 import re
@@ -68,7 +69,9 @@ def redact_body(text, mime, do_redact):
     # non-JSON: redact obvious "key": "value" / key=value token pairs
     text = re.sub(
         r'("(?:[^"]*(?:token|secret|key|auth|session|cookie)[^"]*)"\s*:\s*)"[^"]*"',
-        r'\1"<redacted>"', text, flags=re.I,
+        r'\1"<redacted>"',
+        text,
+        flags=re.I,
     )
     return text
 
@@ -96,6 +99,7 @@ def redact_url(url):
     if not sp.query:
         return url
     from urllib.parse import parse_qsl, urlencode, urlunsplit
+
     q = []
     for k, v in parse_qsl(sp.query, keep_blank_values=True):
         if SECRET_KEY.search(k) or k.lower() in ("sig", "sp", "st", "se", "skoid"):
@@ -120,8 +124,9 @@ def entry_mime(e):
 
 def body_of(e, which):
     if which == "req":
-        return (e["request"].get("postData", {}) or {}).get("text", ""), \
-               (e["request"].get("postData", {}) or {}).get("mimeType", "")
+        return (e["request"].get("postData", {}) or {}).get("text", ""), (
+            e["request"].get("postData", {}) or {}
+        ).get("mimeType", "")
     c = e["response"].get("content", {}) or {}
     return c.get("text", ""), c.get("mimeType", "")
 
@@ -129,11 +134,11 @@ def body_of(e, which):
 # --- commands --------------------------------------------------------------
 def cmd_paths(entries, a):
     from collections import Counter
+
     c = Counter()
     for e in entries:
         sp = urlsplit(e["request"]["url"])
-        key = (e["request"]["method"], e["response"]["status"],
-               sp.netloc + sp.path)
+        key = (e["request"]["method"], e["response"]["status"], sp.netloc + sp.path)
         c[key] += 1
     for (m, st, path), n in sorted(c.items(), key=lambda kv: (-kv[1], kv[0][2])):
         print(f"{n:4d}  {m:6s} {st:3d}  {path}")
@@ -159,8 +164,10 @@ def cmd_list(entries, a):
             continue
         req, resp = e["request"], e["response"]
         size = (resp.get("content", {}) or {}).get("size", 0)
-        print(f"[{i:4d}] {req['method']:5s} {resp['status']:3d} "
-              f"{entry_mime(e)[:22]:22s} {size:>8} {short_url(req['url'])}")
+        print(
+            f"[{i:4d}] {req['method']:5s} {resp['status']:3d} "
+            f"{entry_mime(e)[:22]:22s} {size:>8} {short_url(req['url'])}"
+        )
         shown += 1
         if a.limit and shown >= a.limit:
             print(f"... (--limit {a.limit} reached)")
@@ -174,7 +181,7 @@ def cmd_show(entries, a):
     req, resp = e["request"], e["response"]
     do_r = not a.no_redact
     print(f"### [{a.n}] {req['method']} {req['url']}")
-    print(f"# started {e.get('startedDateTime','')}  time={e.get('time','?')}ms")
+    print(f"# started {e.get('startedDateTime', '')}  time={e.get('time', '?')}ms")
     print("\n--- REQUEST HEADERS ---")
     for k, v in hdrs(req.get("headers"), do_r):
         print(f"{k}: {v}")
@@ -182,7 +189,7 @@ def cmd_show(entries, a):
     if rb:
         print(f"\n--- REQUEST BODY ({rmime}) ---")
         print(redact_body(rb, rmime, do_r)[: a.max])
-    print(f"\n--- RESPONSE {resp['status']} {resp.get('statusText','')} ---")
+    print(f"\n--- RESPONSE {resp['status']} {resp.get('statusText', '')} ---")
     for k, v in hdrs(resp.get("headers"), do_r):
         print(f"{k}: {v}")
     sb, smime = body_of(e, "resp")
@@ -222,9 +229,11 @@ def cmd_grep(entries, a):
             if blob and rx.search(blob):
                 m = rx.search(blob)
                 s = max(0, m.start() - 40)
-                snip = blob[s:m.end() + 40].replace("\n", " ")
-                print(f"[{i:4d}] {where:4s} {e['request']['method']:5s} "
-                      f"{short_url(e['request']['url'],40):40s} …{snip}…")
+                snip = blob[s : m.end() + 40].replace("\n", " ")
+                print(
+                    f"[{i:4d}] {where:4s} {e['request']['method']:5s} "
+                    f"{short_url(e['request']['url'], 40):40s} …{snip}…"
+                )
                 hits += 1
                 break
         if a.limit and hits >= a.limit:
@@ -243,11 +252,11 @@ def key_tree(obj, prefix="", out=None, depth=0, maxdepth=6):
         for k, v in obj.items():
             t = type(v).__name__
             red = " (redacted)" if SECRET_KEY.search(k) else ""
-            print(f"{'  '*depth}{k}: {t}{red}")
+            print(f"{'  ' * depth}{k}: {t}{red}")
             if not red:
                 key_tree(v, out=out, depth=depth + 1, maxdepth=maxdepth)
     elif isinstance(obj, list):
-        print(f"{'  '*depth}[{len(obj)}]")
+        print(f"{'  ' * depth}[{len(obj)}]")
         if obj:
             key_tree(obj[0], out=out, depth=depth + 1, maxdepth=maxdepth)
     return out
@@ -267,8 +276,13 @@ def cmd_keys(entries, a):
 
 # --- WebSocket frames (Chrome HAR: entry["_webSocketMessages"]) -------------
 SIGNALR_TYPE = {
-    1: "Invocation", 2: "StreamItem", 3: "Completion", 4: "StreamInvocation",
-    5: "CancelInvocation", 6: "Ping", 7: "Close",
+    1: "Invocation",
+    2: "StreamItem",
+    3: "Completion",
+    4: "StreamInvocation",
+    5: "CancelInvocation",
+    6: "Ping",
+    7: "Close",
 }
 _RS = "\x1e"  # SignalR json-protocol record separator
 
@@ -332,8 +346,10 @@ def cmd_wsshow(entries, a):
     m = msgs[a.msg]
     data = m.get("data", "")
     do_r = not a.no_redact
-    print(f"### entry [{a.n}] frame [{a.msg}] dir={m.get('type')} "
-          f"opcode={m.get('opcode')} bytes={len(data)}")
+    print(
+        f"### entry [{a.n}] frame [{a.msg}] dir={m.get('type')} "
+        f"opcode={m.get('opcode')} bytes={len(data)}"
+    )
     for ri, r in enumerate(split_signalr(data)):
         try:
             obj = json.loads(r)
@@ -345,21 +361,26 @@ def cmd_wsshow(entries, a):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("file")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("paths"); sp.set_defaults(fn=cmd_paths)
+    sp = sub.add_parser("paths")
+    sp.set_defaults(fn=cmd_paths)
 
     sp = sub.add_parser("list")
-    sp.add_argument("--url"); sp.add_argument("--method")
-    sp.add_argument("--status"); sp.add_argument("--mime")
+    sp.add_argument("--url")
+    sp.add_argument("--method")
+    sp.add_argument("--status")
+    sp.add_argument("--mime")
     sp.add_argument("--limit", type=int, default=60)
     sp.set_defaults(fn=cmd_list)
 
     sp = sub.add_parser("show")
-    sp.add_argument("n", type=int); sp.add_argument("--max", type=int, default=4000)
+    sp.add_argument("n", type=int)
+    sp.add_argument("--max", type=int, default=4000)
     sp.add_argument("--no-redact", action="store_true")
     sp.set_defaults(fn=cmd_show)
 
@@ -387,7 +408,9 @@ def main():
     sp.set_defaults(fn=cmd_keys)
 
     sp = sub.add_parser("ws", help="list WebSocket frames of an entry (SignalR-aware)")
-    sp.add_argument("n", type=int, nargs="?", default=None, help="entry index (default: first WS entry)")
+    sp.add_argument(
+        "n", type=int, nargs="?", default=None, help="entry index (default: first WS entry)"
+    )
     sp.add_argument("--dir", choices=["send", "receive"], default=None)
     sp.add_argument("--limit", type=int, default=100)
     sp.set_defaults(fn=cmd_ws)
