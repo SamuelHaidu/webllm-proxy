@@ -267,10 +267,26 @@ options, pick whichever fits:
    dir (`~/.cloakbrowser/...`) CloakBrowser's own lookup already checks, so
    no further env var is needed.
 
-   The bundle is **platform-specific** — it captures the build machine's
-   dependency wheels (e.g. `psutil` ships a compiled wheel) and its CloakBrowser
-   binary. Build it on the **same OS/arch as the target** (build on Windows for a
-   Windows target, not on Linux).
+   The bundle is **platform-specific** — it captures dependency wheels (e.g.
+   `psutil` ships a compiled wheel) and a CloakBrowser binary for one OS/arch.
+   Plain `uv run poe bundle` captures the *build machine's own* OS/arch, same
+   as before. Two more ways to get both:
+
+   - **`uv run poe bundle-linux` / `bundle-windows`** cross-build just the
+     dependency wheels for that OS from **any** machine (verified: every
+     dependency ships prebuilt wheels for both, so no foreign-arch compiler
+     is needed) into `dist/offline/<target>/`. The CloakBrowser binary can't
+     cross-build this way — its download is authenticated against the
+     *running* OS with no override — so these skip it and print what to do
+     instead (merge in an archive built natively, or use
+     `CLOAKBROWSER_DOWNLOAD_URL`/`CLOAKBROWSER_BINARY_PATH` on the target).
+   - **CI** (`.github/workflows/offline-bundle.yml`) builds a *complete*
+     bundle for both OSes (incl. the binary) via a matrix with one native
+     runner per OS — each leg just runs `webllm-proxy install` +
+     `uv run poe bundle` on its own OS, so nothing needs to be faked.
+     Manually triggerable (`workflow_dispatch`) or on a `v*` tag push;
+     downloads as the `offline-bundle-linux-x64` / `offline-bundle-windows-x64`
+     artifacts.
 
 `webllm-proxy install` prints this same guidance if a download fails, rather
 than dying silently. A Docker fallback image, `cloakhq/cloakbrowser`, also
