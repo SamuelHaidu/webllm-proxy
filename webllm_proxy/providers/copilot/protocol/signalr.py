@@ -15,8 +15,15 @@ from .base import Ack, Completed, Pong, ProtocolCodec
 DELIM = "\x1e"
 
 _DEFAULT_ALLOWED = [
-    "Chat", "Progress", "GenerateContentQuery", "SearchQuery", "Disengaged",
-    "InternalSearchQuery", "InternalLoaderMessage", "RenderCardRequest", "Suggestion",
+    "Chat",
+    "Progress",
+    "GenerateContentQuery",
+    "SearchQuery",
+    "Disengaged",
+    "InternalSearchQuery",
+    "InternalLoaderMessage",
+    "RenderCardRequest",
+    "Suggestion",
 ]
 
 
@@ -48,7 +55,7 @@ def _citations(message: dict) -> list[Citation]:
 
 class SignalRCodec(ProtocolCodec):
     def __init__(self) -> None:
-        self._emitted = 0          # cumulative length already emitted as deltas
+        self._emitted = 0  # cumulative length already emitted as deltas
         self._invocation_id = 0
 
     # ---- encode ----------------------------------------------------------
@@ -88,10 +95,14 @@ class SignalRCodec(ProtocolCodec):
             if val is not None:
                 arg[key] = val
         if o.get("context"):
-            arg["previousMessages"] = [{
-                "author": "user", "description": o["context"],
-                "contextType": "WebPage", "messageType": "Context",
-            }]
+            arg["previousMessages"] = [
+                {
+                    "author": "user",
+                    "description": o["context"],
+                    "contextType": "WebPage",
+                    "messageType": "Context",
+                }
+            ]
         frame = {
             "arguments": [arg],
             "invocationId": str(self._invocation_id),
@@ -116,7 +127,7 @@ class SignalRCodec(ProtocolCodec):
 
     def _decode_one(self, obj: dict) -> list[object]:
         t = obj.get("type")
-        if not obj or t is None:          # `{}` handshake ack
+        if not obj or t is None:  # `{}` handshake ack
             return [Ack()]
         if t == 6:
             return [Pong()]
@@ -149,7 +160,7 @@ class SignalRCodec(ProtocolCodec):
                 continue
             text = m.get("text") or _card_text(m)
             if text and len(text) > self._emitted:
-                out.append(Delta(text[self._emitted:]))
+                out.append(Delta(text[self._emitted :]))
                 self._emitted = len(text)
         return out
 
@@ -175,11 +186,15 @@ class SignalRCodec(ProtocolCodec):
             if thr and thr.at_limit:
                 raise ConversationLimitError(thr.used, thr.maximum)
             return [Completed()]
-        return [Final(
-            text=bot.get("text") or _card_text(bot) or "",
-            citations=_citations(bot),
-            suggestions=[Suggestion(s.get("text", "")) for s in bot.get("suggestedResponses") or []],
-            throttling=thr,
-            conversation_id=item.get("conversationId"),
-            title=item.get("defaultChatName"),
-        )]
+        return [
+            Final(
+                text=bot.get("text") or _card_text(bot) or "",
+                citations=_citations(bot),
+                suggestions=[
+                    Suggestion(s.get("text", "")) for s in bot.get("suggestedResponses") or []
+                ],
+                throttling=thr,
+                conversation_id=item.get("conversationId"),
+                title=item.get("defaultChatName"),
+            )
+        ]

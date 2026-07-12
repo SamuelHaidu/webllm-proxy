@@ -24,21 +24,23 @@ _SUPPORTED_UI: dict[str, str] = {"Markdown": "1.2", "Text": "1.2", "Image": "1.2
 
 class EventCodec(ProtocolCodec):
     def __init__(self) -> None:
-        self._parts: list[str] = []   # assembled answer text
+        self._parts: list[str] = []  # assembled answer text
         self._title: str | None = None
         self._conversation_id: str | None = None
 
     # ---- encode ----------------------------------------------------------
     def open_frames(self) -> list[str]:
         return [
-            json.dumps({
-                "event": "setOptions",
-                "supportedFeatures": _SUPPORTED_FEATURES,
-                "supportedCards": _SUPPORTED_CARDS,
-                "supportedUIComponents": _SUPPORTED_UI,
-                "ads": None,
-                "supportedActions": [],
-            }),
+            json.dumps(
+                {
+                    "event": "setOptions",
+                    "supportedFeatures": _SUPPORTED_FEATURES,
+                    "supportedCards": _SUPPORTED_CARDS,
+                    "supportedUIComponents": _SUPPORTED_UI,
+                    "ads": None,
+                    "supportedActions": [],
+                }
+            ),
             json.dumps({"event": "reportLocalConsents", "grantedConsents": []}),
         ]
 
@@ -48,13 +50,17 @@ class EventCodec(ProtocolCodec):
     def encode_send(self, text: str, *, conversation_id: str, options: dict) -> list[str]:
         o = options or {}
         content = o.get("content") or [{"type": "text", "text": text}]
-        return [json.dumps({
-            "event": "send",
-            "conversationId": conversation_id,
-            "content": content,
-            "mode": o.get("mode", "smart"),
-            "context": o.get("context", {}),
-        })]
+        return [
+            json.dumps(
+                {
+                    "event": "send",
+                    "conversationId": conversation_id,
+                    "content": content,
+                    "mode": o.get("mode", "smart"),
+                    "context": o.get("context", {}),
+                }
+            )
+        ]
 
     def encode_challenge_response(self, challenge: NeedChallenge) -> str | None:
         if challenge.method == "hashcash":
@@ -78,11 +84,13 @@ class EventCodec(ProtocolCodec):
             self._conversation_id = obj.get("conversationId")
             return [Ack()]
         if ev == "challenge":
-            return [NeedChallenge(
-                method=obj.get("method", ""),
-                parameter=obj.get("parameter", ""),
-                id=obj.get("id"),
-            )]
+            return [
+                NeedChallenge(
+                    method=obj.get("method", ""),
+                    parameter=obj.get("parameter", ""),
+                    id=obj.get("id"),
+                )
+            ]
         if ev == "titleUpdate":
             self._title = obj.get("title")
             self._conversation_id = obj.get("conversationId") or self._conversation_id
@@ -90,11 +98,13 @@ class EventCodec(ProtocolCodec):
         if ev == "partCompleted":
             return [Progress("generic")]
         if ev == "done":
-            return [Final(
-                text="".join(self._parts),
-                conversation_id=self._conversation_id,
-                title=self._title,
-            )]
+            return [
+                Final(
+                    text="".join(self._parts),
+                    conversation_id=self._conversation_id,
+                    title=self._title,
+                )
+            ]
         if ev == "pong":
             return [Pong()]
         if ev == "error":
