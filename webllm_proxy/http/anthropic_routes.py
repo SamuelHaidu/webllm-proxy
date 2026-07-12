@@ -17,8 +17,17 @@ log = logging.getLogger(__name__)
 def register_databricks(app, session, provider) -> None:
     @app.get("/v1/models")
     def models():
-        ids = list(config.ENABLED_MODELS) + list(config.OPENAI_MODELS)
-        data = [{"type": "model", "id": m, "display_name": m} for m in ids]
+        # `_wire` tells consumers (the gateway / pi) which HTTP surface a model
+        # actually needs: ENABLED_MODELS (Claude) are Anthropic-Messages-only
+        # (this route); OPENAI_MODELS (Azure GPT-4.1) only work via
+        # /v1/chat/completions (see openai_routes.register_databricks_openai).
+        data = [
+            {"type": "model", "id": m, "display_name": m, "_wire": "anthropic"}
+            for m in config.ENABLED_MODELS
+        ] + [
+            {"type": "model", "id": m, "display_name": m, "_wire": "openai"}
+            for m in config.OPENAI_MODELS
+        ]
         return jsonify(
             {
                 "data": data,
