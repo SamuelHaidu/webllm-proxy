@@ -264,7 +264,10 @@ class BrowserSession:
         if not text:
             return
         if _DUMP:
-            with contextlib.suppress(OSError), Path(_DUMP).open("a") as f:
+            # utf-8 explicitly: on Windows the default (cp1252) would raise
+            # UnicodeEncodeError on non-ASCII SSE text -- which suppress(OSError)
+            # would NOT catch (it's a ValueError), breaking the stream feed.
+            with contextlib.suppress(OSError), Path(_DUMP).open("a", encoding="utf-8") as f:
                 f.write(text)
         for ev in a["acc"].feed(text):
             if ev[0] == "done":

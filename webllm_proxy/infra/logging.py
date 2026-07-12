@@ -48,6 +48,7 @@ def dump_exchange(name: str, payload: dict, *, enabled: bool) -> None:
         base = Path(env_str("WEBLLM_PROXY_DUMP_DIR") or tempfile.gettempdir())
         base.mkdir(parents=True, exist_ok=True)
         text = json.dumps(redact(payload), indent=2, default=str)[:400_000]
-        (base / f"{name}_last_request.json").write_text(text)
+        # utf-8 explicitly so a non-ASCII payload doesn't fail on Windows (cp1252).
+        (base / f"{name}_last_request.json").write_text(text, encoding="utf-8")
     except Exception:
         log.debug("dump_exchange(%s) failed", name, exc_info=True)
