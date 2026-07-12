@@ -27,6 +27,9 @@ dist/
 # Claude Code local (personal, machine-specific) settings — never commit
 .claude/settings.local.json
 
+# pi (project-local runtime state: sessions, generated code index) — never commit
+.pi/
+
 # IDE / OS
 .vscode/
 .idea/
