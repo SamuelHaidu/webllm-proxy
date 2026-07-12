@@ -12,6 +12,11 @@ export interface GatewayModel {
   _title?: string;
   _max_tokens?: number;
   _provider?: string;
+  /** Which HTTP surface this model actually needs. Missing/unknown means
+   *  "openai" (the gateway's /v1/chat/completions). "anthropic" means it is
+   *  Anthropic-Messages-only (the gateway's /v1/messages) -- e.g. databricks'
+   *  Claude models, which 404 on /v1/chat/completions. */
+  _wire?: "openai" | "anthropic";
   object?: string;
 }
 
@@ -23,6 +28,13 @@ export interface PiModel {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
+  /** Per-model API override; only set for non-default wire (anthropic-messages).
+   *  Absent means "use the provider's default (openai-completions)". */
+  api?: "anthropic-messages";
+  /** Per-model baseUrl override paired with `api` above: the gateway ROOT (no
+   *  `/v1`) -- the Anthropic SDK appends `/v1/messages` itself, unlike the
+   *  provider-level openai-completions baseUrl which already includes `/v1`. */
+  baseUrl?: string;
 }
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -37,11 +49,17 @@ export function isReasoning(model: GatewayModel): boolean {
   return REASONING.test(model.id) || REASONING.test(model._title ?? "");
 }
 
-export function mapModel(model: GatewayModel): PiModel {
+/**
+ * @param gatewayRoot the gateway's root URL with NO trailing `/v1` (e.g.
+ *   "http://127.0.0.1:5100"), used only to build the per-model baseUrl
+ *   override for anthropic-wire models. Irrelevant for openai-wire models.
+ */
+export function mapModel(model: GatewayModel, gatewayRoot?: string): PiModel {
   const maxTokens =
     typeof model._max_tokens === "number" && model._max_tokens > 0
       ? model._max_tokens
       : DEFAULT_MAX_TOKENS;
+  const isAnthropic = model._wire === "anthropic";
   return {
     id: model.id,
     name: model._title ?? model.id,
@@ -50,9 +68,12 @@ export function mapModel(model: GatewayModel): PiModel {
     cost: { ...ZERO_COST },
     contextWindow: DEFAULT_CONTEXT,
     maxTokens,
+    ...(isAnthropic ? { api: "anthropic-messages" as const, baseUrl: gatewayRoot } : {}),
   };
 }
 
-export function mapModels(models: GatewayModel[]): PiModel[] {
-  return models.filter((m) => typeof m.id === "string" && m.id.length > 0).map(mapModel);
+export function mapModels(models: GatewayModel[], gatewayRoot?: string): PiModel[] {
+  return models
+    .filter((m) => typeof m.id === "string" && m.id.length > 0)
+    .map((m) => mapModel(m, gatewayRoot));
 }

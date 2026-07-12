@@ -18,7 +18,7 @@ import { mapModels } from "../src/models";
 
 export default async function webllmProvider(pi: ExtensionAPI): Promise<void> {
   const base = gatewayBaseUrl();
-  const models = mapModels(await fetchGatewayModels(base));
+  const models = mapModels(await fetchGatewayModels(base), base);
 
   if (models.length === 0) {
     // Quiet by default (e.g. gateway not running) so a global install does not

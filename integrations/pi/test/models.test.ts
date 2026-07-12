@@ -24,6 +24,29 @@ describe("mapModels", () => {
   });
 });
 
+describe("_wire handling", () => {
+  it("leaves api/baseUrl unset for openai-wire (default) models", () => {
+    const m = mapModel({ id: "databricks__gpt-41-2025-04-14", _wire: "openai" }, "http://gw:5100");
+    expect(m.api).toBeUndefined();
+    expect(m.baseUrl).toBeUndefined();
+  });
+
+  it("leaves api/baseUrl unset when _wire is absent", () => {
+    const m = mapModel({ id: "chatgpt__gpt-5" }, "http://gw:5100");
+    expect(m.api).toBeUndefined();
+    expect(m.baseUrl).toBeUndefined();
+  });
+
+  it("overrides api to anthropic-messages and baseUrl to the gateway root for anthropic-wire models", () => {
+    const m = mapModel(
+      { id: "databricks__claude-4-5-sonnet", _wire: "anthropic" },
+      "http://gw:5100",
+    );
+    expect(m.api).toBe("anthropic-messages");
+    expect(m.baseUrl).toBe("http://gw:5100");
+  });
+});
+
 describe("isReasoning", () => {
   it("detects think/reason/research/deep variants", () => {
     expect(isReasoning({ id: "copilot__think" })).toBe(true);
