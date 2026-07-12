@@ -112,5 +112,7 @@ test = "pytest -q"
 check = ["fmt", "lint", "typecheck", "test"]
 build = "uv build"
 bundle = "python scripts/build_offline_bundle.py"
+bundle-linux = "python scripts/build_offline_bundle.py --target linux-x64"
+bundle-windows = "python scripts/build_offline_bundle.py --target windows-x64"
 publish = "uv publish"
 release = ["check", "build"]
