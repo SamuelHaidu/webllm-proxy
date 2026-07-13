@@ -1,20 +1,32 @@
 """ChatGPT web provider: OpenAI-compatible surface backed by a logged-in
-chatgpt.com session. Tools are emulated (`tools.py`) and reasoning maps onto
-ChatGPT web's `thinking_effort`; the model is forced by rewriting the
-`f/conversation` request body via CDP `Fetch`.
+chatgpt.com session. Tools are emulated via the tag contract; reasoning maps
+onto ChatGPT web's `thinking_effort`; the model is forced by rewriting the
+`f/conversation` request body via CDP Fetch. Exactly two public methods:
+`models()` and `completions()`.
 """
 
-import base64
+from __future__ import annotations
+
 import json
 import logging
+import threading
+import time
+from collections.abc import Iterator
+from pathlib import Path
 
-from ...domain.ports import Accumulator
-from ..base import BrowserProvider
-from . import config
+from ...gateways.cloakbrowser import BrowserSession
+from ...utils import openai as wire
+from ...utils import tags
+from ...utils.prompts import default_store
+from ..base import BrowserBackedProvider
+from .research import run_research
 from .sse import StreamAccumulator
 
 log = logging.getLogger(__name__)
 
+CHATGPT_URL = "https://chatgpt.com"
+NAME = "chatgpt"
+RESEARCH_MODEL = "research"
 
 _MODELS_JS = """async () => {
   const s = await (await fetch('/api/auth/session')).json();
@@ -24,11 +36,32 @@ _MODELS_JS = """async () => {
   return await r.json();
 }"""
 
+_AUTH_JS = """async () => {
+  try { const s = await (await fetch('/api/auth/session')).json();
+        return !!s.accessToken; } catch (e) { return false; }
+}"""
 
+
+def authed(page) -> bool:
+    try:
+        return bool(page.evaluate(_AUTH_JS))
+    except Exception:
+        return False
+
+
+def build_session(headless: bool, profile_dir: Path) -> BrowserSession:
+    return BrowserSession(
+        name=NAME,
+        nav_url=CHATGPT_URL + "/",
+        profile_dir=profile_dir,
+        headless=headless,
+        authed=authed,
+        fetch_patterns=[{"urlPattern": "*/backend-api/f/conversation*", "requestStage": "Request"}],
+    )
+
+
+# ---- effort support -------------------------------------------------------
 def _effort_values(entries) -> set[str]:
-    """The allowed `thinking_effort` strings from one model's `thinking_efforts`
-    list (each entry is either a bare string or a dict with the value under one
-    of a few possible keys, per the real `/backend-api/models` response)."""
     vals: set[str] = set()
     for e in entries:
         if isinstance(e, str):
@@ -40,139 +73,335 @@ def _effort_values(entries) -> set[str]:
     return vals
 
 
-def _model_effort_entry(m) -> tuple[str, set[str]] | None:
-    """(slug, allowed efforts) for one `/backend-api/models` entry, or None if
-    it doesn't advertise configurable thinking effort."""
+def _model_effort_entry(m):
     if not (isinstance(m, dict) and m.get("configurable_thinking_effort") and m.get("slug")):
         return None
     vals = _effort_values(m.get("thinking_efforts") or [])
     return (m["slug"], vals) if vals else None
 
 
-def _apply_overrides(body, forced_model, forced_effort, effort_support) -> bool:
-    """Mutate a parsed `f/conversation` body in place: force the model and/or
-    inject the root `thinking_effort`. Effort is only injected when the effective
-    model advertises `configurable_thinking_effort` and the value is allowed (so
-    it's a safe no-op otherwise). Returns True iff the body changed."""
-    changed = False
-    if forced_model:
-        body["model"] = forced_model
-        changed = True
-    if forced_effort:
-        allowed = effort_support.get(body.get("model"))
-        if allowed and forced_effort in allowed:
-            body["thinking_effort"] = forced_effort
-            changed = True
-    return changed
+# ---- conversation continuity ----------------------------------------------
+def _message_signature(m: dict):
+    role = m.get("role")
+    if role == "assistant" and m.get("tool_calls"):
+        return ("a_tc", json.dumps(m.get("tool_calls"), sort_keys=True, default=str))
+    if role == "tool":
+        return ("tool", m.get("tool_call_id"), wire.message_text(m))
+    return (role, wire.message_text(m))
 
 
-class ChatGptProvider(BrowserProvider):
-    name = "chatgpt"
-    config = config
+def _format_turns(msgs, name_map) -> str:
+    out = []
+    for m in msgs:
+        role = m.get("role")
+        if role == "user":
+            out.append(wire.message_text(m))
+        elif role == "tool":
+            out.append(tags.format_tool_result(m, name_map))
+    return "\n\n".join(t for t in out if t).strip()
 
-    def __init__(self, host: str | None = None, port: int | None = None):
-        super().__init__(host, port)
-        self._effort_support: dict[str, set[str]] = {}
 
-    # ---- browser hooks ---------------------------------------------------
-    def fetch_patterns(self):
-        # Intercept the send so we can force model / thinking_effort in the body.
-        return [{"urlPattern": "*/backend-api/f/conversation*", "requestStage": "Request"}]
+class _Planner:
+    def __init__(self):
+        self._sigs: list = []
 
-    def on_fetch_paused(self, client, params, job):
-        args = {"requestId": params["requestId"]}
+    def plan_turn(self, messages, tools, tool_choice, forced_name):
+        sigs = [_message_signature(m) for m in messages]
+        prev = self._sigs
+        continuing = bool(prev) and len(sigs) > len(prev) and sigs[: len(prev)] == prev
+        self._sigs = sigs
+        name_map = tags.tool_name_map(messages)
+        if continuing:
+            return _format_turns(messages[len(prev) :], name_map) or None, False
+        system_text = "\n\n".join(
+            wire.message_text(m) for m in messages if m.get("role") == "system"
+        )
+        preamble = tags.build_preamble(system_text, tools, tool_choice, forced_name)
+        last_user = max(
+            (i for i, m in enumerate(messages) if m.get("role") == "user"), default=None
+        )
+        tail = messages[last_user:] if last_user is not None else messages
+        body = _format_turns(tail, name_map)
+        if not preamble:
+            return (body or None), True
+        framing = default_store.get("user_request_framing")
+        return ((preamble + "\n\n" + framing + "\n\n" + body).strip() or None), True
+
+
+def _find_composer(page):
+    for sel in ("#prompt-textarea", 'div[contenteditable="true"]', "textarea"):
+        loc = page.locator(sel).first
         try:
-            post = (params.get("request") or {}).get("postData")
-            fm = getattr(job.payload, "model", None) if job else None
-            fe = getattr(job.payload, "effort", None) if job else None
-            if post and (fm or fe):
-                b = json.loads(post)
-                if _apply_overrides(b, fm, fe, self._effort_support):
-                    args["postData"] = base64.b64encode(json.dumps(b).encode()).decode()
+            if loc.count() and loc.is_visible():
+                return loc
         except Exception:
             pass
-        client.send("Fetch.continueRequest", args)
+    return None
 
-    def authed(self, page) -> bool:
-        try:
-            r = page.request.get(config.CHATGPT_URL + "/api/auth/session")
-            return bool(r.ok and r.json().get("accessToken"))
-        except Exception:
-            return False
 
-    def on_ready(self, page):
-        self._effort_support = self._load_effort_support(page)
-        if self._effort_support:
-            log.info(
-                "thinking_effort configurable models: %s",
-                {k: sorted(v) for k, v in self._effort_support.items()},
-            )
+def _trigger(page, *, new_conversation: bool, message: str):
+    if new_conversation:
+        page.goto(CHATGPT_URL + "/", wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(1200)
+    comp = _find_composer(page)
+    if not comp:
+        raise RuntimeError("composer not found")
+    comp.click()
+    page.wait_for_timeout(150)
+    page.keyboard.insert_text(message)
+    page.wait_for_timeout(150)
+    page.keyboard.press("Enter")
 
-    def _load_effort_support(self, page) -> dict[str, set[str]]:
-        try:
-            data = page.evaluate(_MODELS_JS)
-        except Exception:
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        entries = (_model_effort_entry(m) for m in data.get("models") or [])
-        return dict(e for e in entries if e is not None)
 
-    def capture_match(self, url: str) -> bool:
-        return url.split("?", maxsplit=1)[0].endswith("/f/conversation")
+class ChatgptProvider(BrowserBackedProvider):
+    name = NAME
 
-    def trigger(self, page, job):
-        turn = job.payload
-        if turn.new_conversation:
-            page.goto(config.CHATGPT_URL + "/", wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(1200)
-        comp = self._find_composer(page)
-        if not comp:
-            raise RuntimeError("composer not found")
-        comp.click()
-        page.wait_for_timeout(150)
-        page.keyboard.insert_text(turn.message)
-        page.wait_for_timeout(150)
-        page.keyboard.press("Enter")
+    def __init__(self, session: BrowserSession):
+        super().__init__(session)
+        self._lock = threading.Lock()
+        self._planner = _Planner()
+        self._effort_support: dict[str, set[str]] | None = None
 
-    @staticmethod
-    def _find_composer(page):
-        for sel in ("#prompt-textarea", 'div[contenteditable="true"]', "textarea"):
-            loc = page.locator(sel).first
+    # ---- effort support (lazy) -------------------------------------------
+    def _load_effort_support(self) -> dict[str, set[str]]:
+        if self._effort_support is not None:
+            return self._effort_support
+        data = self.session.evaluate(_MODELS_JS)
+        support: dict[str, set[str]] = {}
+        if isinstance(data, dict):
+            for m in data.get("models") or []:
+                entry = _model_effort_entry(m)
+                if entry:
+                    support[entry[0]] = entry[1]
+        self._effort_support = support
+        return support
+
+    def _fetch_rewrite(self, forced_model, forced_effort):
+        support = self._load_effort_support()
+
+        def rewrite(post: str):
             try:
-                if loc.count() and loc.is_visible():
-                    return loc
-            except Exception:
-                pass
+                b = json.loads(post)
+            except json.JSONDecodeError:
+                return None
+            changed = False
+            if forced_model:
+                b["model"] = forced_model
+                changed = True
+            if forced_effort:
+                allowed = support.get(b.get("model"))
+                if allowed and forced_effort in allowed:
+                    b["thinking_effort"] = forced_effort
+                    changed = True
+            return json.dumps(b) if changed else None
+
+        return rewrite
+
+    # ---- models -----------------------------------------------------------
+    def models(self) -> list[dict]:
+        data = self.session.evaluate(_MODELS_JS)
+        out = []
+        if isinstance(data, dict) and not data.get("error"):
+            for m in data.get("models") or []:
+                slug = m.get("slug")
+                if not slug:
+                    continue
+                out.append(
+                    {
+                        "id": wire.join_model(NAME, slug),
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "openai",
+                        "_title": m.get("title"),
+                        "_max_tokens": m.get("max_tokens"),
+                    }
+                )
+        out.append(
+            {
+                "id": wire.join_model(NAME, RESEARCH_MODEL),
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+                "_title": "Emulated web research",
+            }
+        )
+        return out
+
+    # ---- completions ------------------------------------------------------
+    def completions(self, request: dict):
+        model = (request.get("model") or "").strip()
+        if model == RESEARCH_MODEL:
+            return run_research(self.session, self._lock, request)
+
+        messages = request.get("messages") or []
+        stream = bool(request.get("stream"))
+        req_model = _normalize_model(model)
+        effort = wire.normalize_effort(request)
+
+        tools = request.get("tools") or []
+        raw_choice = request.get("tool_choice")
+        forced_name = None
+        if isinstance(raw_choice, dict):
+            forced_name = (raw_choice.get("function") or {}).get("name")
+            choice = "required"
+        elif isinstance(raw_choice, str):
+            choice = raw_choice
+        else:
+            choice = "auto" if tools else "none"
+        tools_active = bool(tools) and choice != "none"
+
+        text, new_conv = self._planner.plan_turn(
+            messages, tools if tools_active else None, choice, forced_name
+        )
+        if not text:
+            return {"error": {"message": "no user message provided"}}
+
+        cid = wire.new_id()
+        created = int(time.time())
+        resp_model = wire.join_model(NAME, model or "chatgpt")
+
+        self._lock.acquire()
+        try:
+            out_q = self.session.run_turn(
+                trigger=lambda page: _trigger(page, new_conversation=new_conv, message=text),
+                capture_url=lambda url: url.split("?", 1)[0].endswith("/f/conversation"),
+                parse=StreamAccumulator(),
+                fetch_rewrite=self._fetch_rewrite(req_model, effort),
+            )
+        except Exception as e:
+            self._lock.release()
+            return {"error": {"message": str(e)}}
+
+        if tools_active:
+            try:
+                return self._tool_response(
+                    out_q, cid, created, resp_model, stream, tags.tool_names(tools)
+                )
+            finally:
+                if not stream:
+                    self._lock.release()
+
+        if stream:
+            return self._stream_text(out_q, cid, created, resp_model)
+        try:
+            return self._nonstream_text(out_q, cid, created, resp_model)
+        finally:
+            self._lock.release()
+
+    # ---- response shaping -------------------------------------------------
+    def _stream_text(self, out_q, cid, created, model) -> Iterator[str]:
+        def gen():
+            try:
+                yield wire.chunk(cid, created, model, {"role": "assistant"})
+                while True:
+                    ev = out_q.get()
+                    if ev is None:
+                        break
+                    kind, val = ev
+                    if kind == "content":
+                        yield wire.chunk(cid, created, model, {"content": val})
+                    elif kind == "reasoning":
+                        yield wire.chunk(cid, created, model, {"reasoning_content": val})
+                    elif kind == "error":
+                        yield wire.chunk(
+                            cid,
+                            created,
+                            model,
+                            {"content": f"\n[proxy error: {val}]"},
+                            finish="stop",
+                        )
+                        break
+                    elif kind == "done":
+                        yield wire.chunk(cid, created, model, {}, finish=val or "stop")
+                        break
+                yield "data: [DONE]\n\n"
+            finally:
+                self._lock.release()
+
+        return gen()
+
+    def _nonstream_text(self, out_q, cid, created, model) -> dict:
+        content, reasoning, finish, err, _ = _drain_full(out_q)
+        if err and not content:
+            return {"error": {"message": err, "type": "upstream_error"}}
+        msg = {"role": "assistant", "content": content}
+        if reasoning:
+            msg["reasoning_content"] = reasoning
+        return wire.completion(cid, created, model, msg, finish)
+
+    def _tool_response(self, out_q, cid, created, model, stream, allowed_names):
+        content, reasoning, finish, err, _ = _drain_full(out_q)
+        if err and not content:
+            return {"error": {"message": err, "type": "upstream_error"}}
+        calls, leftover = tags.parse_tool_calls(content)
+        if stream:
+            return self._stream_tools(cid, created, model, calls, leftover, reasoning, finish)
+        if calls:
+            msg = {"role": "assistant", "content": leftover or None, "tool_calls": calls}
+            if reasoning:
+                msg["reasoning_content"] = reasoning
+            return wire.completion(cid, created, model, msg, "tool_calls")
+        msg = {"role": "assistant", "content": content}
+        if reasoning:
+            msg["reasoning_content"] = reasoning
+        return wire.completion(cid, created, model, msg, finish)
+
+    def _stream_tools(
+        self, cid, created, model, calls, leftover, reasoning, finish
+    ) -> Iterator[str]:
+        def gen():
+            try:
+                yield wire.chunk(cid, created, model, {"role": "assistant"})
+                if reasoning:
+                    yield wire.chunk(cid, created, model, {"reasoning_content": reasoning})
+                if calls:
+                    d = {
+                        "tool_calls": [
+                            {
+                                "index": i,
+                                "id": c["id"],
+                                "type": "function",
+                                "function": c["function"],
+                            }
+                            for i, c in enumerate(calls)
+                        ]
+                    }
+                    if leftover:
+                        d["content"] = leftover
+                    yield wire.chunk(cid, created, model, d)
+                    yield wire.chunk(cid, created, model, {}, finish="tool_calls")
+                else:
+                    if leftover:
+                        yield wire.chunk(cid, created, model, {"content": leftover})
+                    yield wire.chunk(cid, created, model, {}, finish=finish)
+                yield "data: [DONE]\n\n"
+            finally:
+                self._lock.release()
+
+        return gen()
+
+
+def _normalize_model(model: str | None) -> str | None:
+    if not model:
         return None
+    if model.strip().lower() in ("auto", "default", "chatgpt", "gpt", ""):
+        return None
+    return model.strip()
 
-    def make_accumulator(self) -> Accumulator:
-        return StreamAccumulator()
 
-    # ---- runtime helpers used by routes ----------------------------------
-    def list_models(self, session):
-        return session.evaluate(_MODELS_JS)
-
-    # ---- HTTP surface ----------------------------------------------------
-    def register_routes(self, app, session):
-        # Lazy: http/openai_routes.py needs both providers' config (it hosts
-        # databricks' Azure channel too), so importing it eagerly here would
-        # make selecting chatgpt also import databricks' config -- same
-        # reasoning as providers/__init__.py's lazy provider imports.
-        from ...http.openai_routes import register_chatgpt
-
-        register_chatgpt(app, session, self)
-
-    def research_backend(self, session):
-        # Lazy: research/ isn't needed unless something actually asks for it.
-        from ...research.backends import resolve_backend
-
-        return resolve_backend(session)
-
-    def banner(self, host, port):
-        return [
-            f"  GET  http://{host}:{port}/v1/models",
-            f"  POST http://{host}:{port}/v1/chat/completions",
-            f"  POST http://{host}:{port}/v1/research      (async job: submit -> poll -> report)",
-            f"  GET  http://{host}:{port}/v1/research/<id>",
-        ]
+def _drain_full(out_q):
+    content, reasoning, finish, err = "", "", "stop", None
+    while True:
+        ev = out_q.get()
+        if ev is None:
+            break
+        kind, val = ev
+        if kind == "content":
+            content += val
+        elif kind == "reasoning":
+            reasoning += val
+        elif kind == "done":
+            finish = val or "stop"
+        elif kind == "error":
+            err = val
+    return content, reasoning, finish, err, []
