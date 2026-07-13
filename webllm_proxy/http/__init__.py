@@ -1,4 +1,9 @@
-"""Thin Flask blueprints: parse the request, call into `application`/
-`providers/*/llmproxy`, shape the response with `wire`. One module per wire
-protocol family (`openai_routes`, `anthropic_routes`), plus the cross-cutting
-`health` helpers every route shares."""
+"""HTTP surface: one Flask app + controllers, decoupled from providers.
+
+`build_app(providers)` mounts `GET /v1/models`, `POST /v1/chat/completions`,
+and `GET /health` over the given `{name: Provider}` map.
+"""
+
+from .app import build_app
+
+__all__ = ["build_app"]
