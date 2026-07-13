@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 CHATGPT_URL = "https://chatgpt.com"
 NAME = "chatgpt"
 RESEARCH_MODEL = "research"
+AUTO_MODEL = "auto"
 
 _MODELS_JS = """async () => {
   const s = await (await fetch('/api/auth/session')).json();
@@ -200,7 +201,15 @@ class ChatgptProvider(BrowserBackedProvider):
     # ---- models -----------------------------------------------------------
     def models(self) -> list[dict]:
         data = self.session.evaluate(_MODELS_JS)
-        out = []
+        out = [
+            {
+                "id": wire.join_model(NAME, AUTO_MODEL),
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+                "_title": "Auto (ChatGPT picks the model, like the web UI's own Auto option)",
+            }
+        ]
         if isinstance(data, dict) and not data.get("error"):
             for m in data.get("models") or []:
                 slug = m.get("slug")
@@ -387,7 +396,7 @@ class ChatgptProvider(BrowserBackedProvider):
 def _normalize_model(model: str | None) -> str | None:
     if not model:
         return None
-    if model.strip().lower() in ("auto", "default", "chatgpt", "gpt", ""):
+    if model.strip().lower() in (AUTO_MODEL, "default", "chatgpt", "gpt", ""):
         return None
     return model.strip()
 
