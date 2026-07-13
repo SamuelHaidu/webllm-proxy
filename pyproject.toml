@@ -16,6 +16,7 @@ dependencies = [
     "platformdirs>=4.0",  # cross-platform per-OS data dir (login profiles)
     "pyyaml>=6.0",        # parse webllm-proxy.yaml
     "pydantic>=2.0",      # validate/type the config schema
+    "tiktoken>=0.7",      # BPE token counting (usage estimation)
 ]
 
 [project.scripts]
