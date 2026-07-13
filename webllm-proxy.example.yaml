@@ -1,0 +1,91 @@
+# webllm-proxy configuration TEMPLATE. Copy to webllm-proxy.yaml (gitignored,
+# never commit that copy — it holds your personal workspace_url) and fill in
+# your own databricks workspace_url below.
+#
+# Run:  webllm-proxy serve --config-file ./webllm-proxy.yaml
+# Log in once per enabled provider first (needs a display):
+#   webllm-proxy login --provider chatgpt
+
+server:
+  host: 127.0.0.1
+  port: 5100
+
+providers:
+  chatgpt:
+    enabled: true
+    headless: true
+    # profile_dir: /custom/path   # optional; defaults to the per-OS data dir
+    # `usage.prompt_tokens`/`completion_tokens` are estimated (chatgpt has no
+    # real token-count API), via one of the vendored BPE-vocab + chat-overhead
+    # profiles in webllm_proxy/utils/tokens_data/model_profiles.json. Provider
+    # default: the flagship profile (also used for `research`/`auto`, which
+    # aren't in the vendored set under their own name).
+    tokenizer: openai/gpt-5
+    # Per-model overrides for the smaller/mini tiers (checked live via
+    # GET /v1/models -- chatgpt's web slugs, e.g. "gpt-5-3"/"gpt-5-5", aren't
+    # official API model ids so there's no exact vendored match for the
+    # flagship variants either; these are its closest available profile):
+    models:
+      gpt-5-mini:
+        tokenizer: openai/gpt-5-mini
+      gpt-5-3-mini:
+        tokenizer: openai/gpt-5-mini
+      gpt-5-5-mini:
+        tokenizer: openai/gpt-5-mini
+      gpt-5-4-t-mini:
+        tokenizer: openai/gpt-5-mini
+
+  databricks:
+    enabled: true
+    headless: true
+    # Required when enabled: the workspace URL including its ?o=<org-id> query.
+    workspace_url: "https://<your-workspace>.cloud.databricks.com/?o=<org-id>"
+    # Models are auto-discovered live from graphql/ConversationModelStatuses
+    # (the editor-assistant-agent-mode entitlements); no static list to maintain.
+    style_rules: true
+    # NOTE: both databricks channels report *real* upstream usage now (fixed
+    # 2026-07-13 -- see docs/discovery/2026-07-13-token-usage-estimation.md):
+    # the Azure/GPT channel already did (`usage` in its OpenAI-shaped SSE);
+    # the Claude channel didn't (AnthropicSSE dropped `message_start`/
+    # `message_delta` usage events, and separately always requested `stream`
+    # to match the client -- a non-streaming request got back a plain
+    # `application/json` body our SSE-only parser silently produced nothing
+    # from). Both are fixed, so `tokenizer`/`models` below are now only a
+    # *fallback* for the rare turn upstream doesn't report usage on -- still
+    # worth setting for that case. The example below matches one workspace's
+    # real GET /v1/models mix of GPT + one Claude model; adjust to your own.
+    tokenizer: openai/gpt-4.1  # generic GPT fallback for the many gpt-4o/4.1/5 deployments
+    models:
+      claude-4-5-sonnet:
+        tokenizer: anthropic/claude-sonnet-4.5
+      gpt-4o-2024-05-13:
+        tokenizer: openai/gpt-4o
+      gpt-4o-2024-08-06:
+        tokenizer: openai/gpt-4o
+      gpt-4o-hybrid:
+        tokenizer: openai/gpt-4o
+      gpt-4o-mini-2024-07-18:
+        tokenizer: openai/gpt-4o-mini
+      gpt-41-2025-04-14:
+        tokenizer: openai/gpt-4.1
+      gpt-41-mini-2025-04-14:
+        tokenizer: openai/gpt-4.1-mini
+      gpt-41-nano-2025-04-14:
+        tokenizer: openai/gpt-4.1-mini  # closest available; no "nano" profile vendored
+      gpt-5-mini-2025-08-07:
+        tokenizer: openai/gpt-5-mini
+      gpt-5-mini-2025-08-07-combined:
+        tokenizer: openai/gpt-5-mini
+      gpt-5-nano-2025-08-07:
+        tokenizer: openai/gpt-5-nano
+      # text-embedding-3-large-1 / ghosttext-code-completion: not chat models
+      # (or no comparable vendored profile) -- left on the provider default.
+
+  copilot:
+    enabled: true
+    headless: true
+    edition: m365
+    # M365 Copilot is OpenAI-GPT-backed (its own labels confirm GPT-5.5), so
+    # the flagship profile is the best available match for every model here
+    # -- no vendored "gpt-5.5" variant to pick per-model instead.
+    tokenizer: openai/gpt-5

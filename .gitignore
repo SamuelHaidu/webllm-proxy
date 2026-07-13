@@ -14,6 +14,10 @@ profile_config.txt
 *.har
 docs/databricks_har/
 
+# Personal server config (workspace URL etc.) — never commit; copy
+# webllm-proxy.example.yaml to webllm-proxy.yaml and fill in your own.
+webllm-proxy.yaml
+
 # Python
 __pycache__/
 *.py[cod]
