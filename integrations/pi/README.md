@@ -63,6 +63,41 @@ Tip: run `/genie` inside a real Databricks project directory rather than this
 proxy's own repo, so the repo's `CLAUDE.md` (which describes the proxy) doesn't
 confuse the model about where it is.
 
+## ChatGPT emulated agent mode
+
+chatgpt.com has no tool-calling API, so by default a `webllm/chatgpt__*` model is
+plain chat. Turn on **chatgpt emulated agent mode** to also get chatgpt as a
+first-class **coding agent**, native to pi: its prose renders as a normal
+assistant message and its actions render/execute as normal tool calls
+(read/write/bash/edit/find/grep) — pi runs the loop, approvals and all. Under the
+hood a small prompt contract (`prompts/chatgpt_agent.md`) makes the model emit
+one tagged action per turn, and the `webllm-agent` provider translates that to
+native pi tool calls (`src/agentProtocol.ts` + `src/agentStream.ts`).
+
+It's **off by default and additive** (the plain `webllm` provider is untouched).
+Turn it on/off with the **`/webllm-agent`** command — it saves the setting and
+applies immediately (no relaunch):
+
+```
+/webllm-agent on       # or: off, or bare /webllm-agent for status
+```
+
+That persists `{ "webllm": { "chatgptAgentMode": true } }` to
+`~/.pi/agent/settings.json`. You can also edit that file (or `.pi/settings.json`
+per-project) by hand, or set `WEBLLM_CHATGPT_AGENT=1` to override for one run.
+(pi has no API for extensions to add a row to its built-in `/settings` screen,
+so the toggle is this command rather than a `/settings` entry.)
+
+When on, the chatgpt models also appear as `webllm-agent/chatgpt__<slug>`
+("… (agent)"); pick one and use pi normally:
+
+```
+pi --model 'webllm-agent/chatgpt__gpt-5' -p "read main.py and add unittest tests"
+```
+
+> Same start-order rule as the provider: bring up the gateway + `--provider
+> chatgpt` proxy first, then launch pi (models are discovered at startup).
+
 ## Develop
 
 ```

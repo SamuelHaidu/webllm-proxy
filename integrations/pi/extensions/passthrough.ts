@@ -5,7 +5,9 @@
  *
  * - `/chatgpt [model-id] [message]` -- plain chatgpt.com web chat, exactly like
  *   using chatgpt.com in a browser. Tool policy `"none"`: nothing local can run
- *   against a web chat, so ALL local tools are disabled.
+ *   against a web chat, so ALL local tools are disabled. (For chatgpt as a
+ *   working coding agent, enable "chatgpt emulated agent mode" -- see
+ *   extensions/chatgpt-agent.ts -- and pick a `webllm-agent/*` model instead.)
  * - `/genie [model-id] [message]` -- databricks Claude (the `llmproxy` channel)
  *   as a working agent. Tool policy `"all"`: KEEP pi's local tools active so the
  *   model can actually act -- start SQL warehouses / run queries via the
