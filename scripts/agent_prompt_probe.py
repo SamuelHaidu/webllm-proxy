@@ -35,7 +35,16 @@ BASE = os.environ.get("WEBLLM_BASE", "http://127.0.0.1:5102")
 _ROOT = Path(__file__).resolve().parent.parent
 PROMPT_FILE = _ROOT / "webllm_proxy" / "prompts" / "chatgpt_agent.md"
 PROJECT_ROOT = _ROOT / "docs" / "discovery" / "project_test"
-SKIP = {".git", "__pycache__", ".venv", "node_modules", ".ruff_cache", ".pytest_cache", ".pi", "dist"}
+SKIP = {
+    ".git",
+    "__pycache__",
+    ".venv",
+    "node_modules",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".pi",
+    "dist",
+}
 
 REQUEST = (
     "Read main.py, then write a test suite for the functions in it using "
@@ -79,7 +88,9 @@ def _tree(root: Path) -> str:
 
 
 def _ask(model: str) -> None:
-    prompt = PROMPT_FILE.read_text(encoding="utf-8").replace("<<PROJECT_TREE>>", _tree(PROJECT_ROOT))
+    prompt = PROMPT_FILE.read_text(encoding="utf-8").replace(
+        "<<PROJECT_TREE>>", _tree(PROJECT_ROOT)
+    )
     user = f"{prompt}\n\n<request>{REQUEST}</request>"
     status, data = _req(
         "POST",
@@ -129,7 +140,11 @@ def parse_action(reply: str) -> dict | None:
         return None
     kind, m = best
     if kind == "read_file":
-        return {"kind": kind, "path": _attr(m.group(1), "path"), "lines": _attr(m.group(1), "lines")}
+        return {
+            "kind": kind,
+            "path": _attr(m.group(1), "path"),
+            "lines": _attr(m.group(1), "lines"),
+        }
     if kind == "create_file":
         return {"kind": kind, "path": _attr(m.group(1), "path"), "body": m.group(2)}
     if kind == "edit_file":
@@ -176,7 +191,9 @@ def execute(action: dict, root: Path) -> str:
             text = p.read_text(encoding="utf-8")
             old = action["old"]
             if not old or text.count(old) != 1:
-                return f"error: <old> must match exactly once (count={text.count(old) if old else 0})"
+                return (
+                    f"error: <old> must match exactly once (count={text.count(old) if old else 0})"
+                )
             p.write_text(text.replace(old, action["new"] or "", 1), encoding="utf-8")
             return f"edited {action['path']}"
         if kind == "bash":
