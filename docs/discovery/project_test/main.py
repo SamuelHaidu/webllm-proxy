@@ -83,9 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     prime_parser = subparsers.add_parser("prime", help="Check if a number is prime.")
     prime_parser.add_argument("n", type=int)
 
-    primes_parser = subparsers.add_parser(
-        "primes-up-to", help="List all primes up to a limit."
-    )
+    primes_parser = subparsers.add_parser("primes-up-to", help="List all primes up to a limit.")
     primes_parser.add_argument("limit", type=int)
 
     sort_parser = subparsers.add_parser("sort", help="Sort integer values.")
