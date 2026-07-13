@@ -28,6 +28,15 @@ def test_build_preamble_empty_when_no_sys_no_tools():
     assert tags.build_preamble("", None) == ""
 
 
+def test_build_preamble_no_unconditional_wrapper():
+    """build_preamble no longer unconditionally injects a fixed wrapper --
+    only what's passed in as `system_text` (the resolved, config-gated
+    prompt) shows up."""
+    pre = tags.build_preamble("You are helpful.", None)
+    assert pre == "You are helpful."
+    assert "SYSTEM INSTRUCTIONS" not in pre
+
+
 def test_build_preamble_default_is_exclusive_chatgpt_wording():
     pre = tags.build_preamble("", _TOOLS)
     assert "the only actions available to you" in pre

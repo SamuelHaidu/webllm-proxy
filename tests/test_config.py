@@ -97,3 +97,73 @@ def test_per_model_tokenizer_rejects_unknown_profile():
 
 def test_model_tokenizer_overrides_empty_by_default():
     assert Config().model_tokenizer_overrides() == {}
+
+
+def test_system_prompt_none_by_default():
+    """The proxy sends no system prompt at all unless the operator configures
+    one -- provider default and per-model override both null."""
+    assert Config().providers.chatgpt.system_prompt_for("gpt-5-mini") is None
+    assert Config().providers.chatgpt.system_prompt_for(None) is None
+
+
+def test_system_prompt_provider_default():
+    cfg = Config.model_validate({"providers": {"chatgpt": {"system_prompt": "webui_agent_prompt"}}})
+    assert cfg.providers.chatgpt.system_prompt_for("gpt-5-mini") == "webui_agent_prompt"
+    assert cfg.providers.chatgpt.system_prompt_for(None) == "webui_agent_prompt"
+
+
+def test_system_prompt_per_model_override_wins():
+    cfg = Config.model_validate(
+        {
+            "providers": {
+                "databricks": {
+                    "system_prompt": "databricks_default_system_prompt",
+                    "models": {
+                        "claude-4-5-sonnet": {
+                            "tokenizer": "anthropic/claude-sonnet-4.5",
+                            "system_prompt": "webui_agent_prompt",
+                        }
+                    },
+                }
+            }
+        }
+    )
+    assert cfg.providers.databricks.system_prompt_for("claude-4-5-sonnet") == "webui_agent_prompt"
+    # A model with no override falls back to the provider-level default.
+    assert cfg.providers.databricks.system_prompt_for("gpt-41-2025-04-14") == (
+        "databricks_default_system_prompt"
+    )
+
+
+def test_user_suffix_none_by_default():
+    """No text is appended to the user turn unless the operator configures
+    one -- provider default and per-model override both null."""
+    assert Config().providers.chatgpt.user_suffix_for("gpt-5-mini") is None
+    assert Config().providers.chatgpt.user_suffix_for(None) is None
+
+
+def test_user_suffix_provider_default():
+    cfg = Config.model_validate({"providers": {"chatgpt": {"user_suffix": "webui_agent_prompt"}}})
+    assert cfg.providers.chatgpt.user_suffix_for("gpt-5-mini") == "webui_agent_prompt"
+    assert cfg.providers.chatgpt.user_suffix_for(None) == "webui_agent_prompt"
+
+
+def test_user_suffix_per_model_override_wins():
+    cfg = Config.model_validate(
+        {
+            "providers": {
+                "databricks": {
+                    "user_suffix": "style_rules",
+                    "models": {
+                        "claude-4-5-sonnet": {
+                            "tokenizer": "anthropic/claude-sonnet-4.5",
+                            "user_suffix": "webui_agent_prompt",
+                        }
+                    },
+                }
+            }
+        }
+    )
+    assert cfg.providers.databricks.user_suffix_for("claude-4-5-sonnet") == "webui_agent_prompt"
+    # A model with no override falls back to the provider-level default.
+    assert cfg.providers.databricks.user_suffix_for("gpt-41-2025-04-14") == "style_rules"

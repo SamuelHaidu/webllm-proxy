@@ -24,6 +24,41 @@ def test_message_text_parts():
     assert wire.message_text(m) == "a\nb"
 
 
+def test_append_user_suffix_string_content():
+    messages = [{"role": "user", "content": "hi"}]
+    out = wire.append_user_suffix(messages, "stay in character")
+    assert out[0]["content"] == "hi\n\nstay in character"
+    # original untouched
+    assert messages[0]["content"] == "hi"
+
+
+def test_append_user_suffix_targets_last_user_message():
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "second"},
+    ]
+    out = wire.append_user_suffix(messages, "reminder")
+    assert out[0]["content"] == "first"
+    assert out[2]["content"] == "second\n\nreminder"
+
+
+def test_append_user_suffix_list_content():
+    messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+    out = wire.append_user_suffix(messages, "reminder")
+    assert out[0]["content"] == [
+        {"type": "text", "text": "hi"},
+        {"type": "text", "text": "reminder"},
+    ]
+
+
+def test_append_user_suffix_noop_without_suffix_or_user_message():
+    messages = [{"role": "assistant", "content": "hi"}]
+    assert wire.append_user_suffix(messages, "reminder") is messages
+    user_messages = [{"role": "user", "content": "hi"}]
+    assert wire.append_user_suffix(user_messages, "") is user_messages
+
+
 def test_assemble_completion_from_sse():
     sse = (
         'data: {"choices":[{"delta":{"role":"assistant","content":"Hel"}}]}\n\n'

@@ -12,6 +12,24 @@ cutting utils work, not a backend-specific reverse-engineering finding).
 
 ## Entries
 
+- **[chatgpt][databricks][copilot]** `2026-07-13-system-prompt-architecture.md` —
+  survey of how the final system prompt is assembled, one per provider (not
+  unified). chatgpt/copilot have no native system role/tool-calling, so both
+  collapse the client's `messages` into text and prepend a synthesized system
+  block via the shared `utils/tags.build_preamble()` (`utils/prompts.py`
+  reads the framing `.md` files) -- chatgpt uses the strict "exactly these N
+  tools and no others" contract plus a `_Planner` continuation heuristic that
+  skips re-sending it on a continuing stateful thread; copilot uses a milder
+  non-exclusive contract every turn (no continuity API), which live-testing
+  separately confirmed Copilot's model still refuses to use at all. databricks
+  talks a real Anthropic/Azure API instead (no tag emulation) but is
+  **asymmetric between its own two channels**: the Claude channel always
+  prepends a Genie/tone/safety system block (`llmproxy._prepend_system`,
+  documented as necessary to defeat a server-side scope guard) + optional
+  style rules, while the Azure/GPT channel injects nothing and forwards the
+  client's system messages untouched. Also flags two prompt-store files
+  (`databricks_genie_code_local_system_prompt.md`, `genie_code_tools.json`)
+  that exist on disk but are wired into zero code paths.
 - **[tokens]** `2026-07-13-token-usage-estimation.md` — real `usage.prompt_tokens`/
   `completion_tokens` (was a zeros placeholder). Ported `coder/ai-tokenizer`
   (MIT): real BPE counts via `tiktoken` (its 3 built-in vocabs, plus a

@@ -19,7 +19,9 @@ def build_provider(name: str, config: Config) -> BrowserBackedProvider:
         from . import chatgpt
 
         session = chatgpt.build_session(pc.headless, profile)
-        return chatgpt.ChatgptProvider(session)
+        return chatgpt.ChatgptProvider(
+            session, system_prompt=pc.system_prompt_for, user_suffix=pc.user_suffix_for
+        )
     if name == "databricks":
         from . import databricks
 
@@ -28,13 +30,20 @@ def build_provider(name: str, config: Config) -> BrowserBackedProvider:
             session,
             workspace_url=pc.workspace_url,
             style_rules=pc.style_rules,
+            system_prompt=pc.system_prompt_for,
+            user_suffix=pc.user_suffix_for,
         )
     if name == "copilot":
         from . import copilot
 
         nav_url = pc.url or copilot.NAV_URL
         session = copilot.build_session(pc.headless, profile, nav_url)
-        return copilot.CopilotProvider(session, nav_url=nav_url)
+        return copilot.CopilotProvider(
+            session,
+            nav_url=nav_url,
+            system_prompt=pc.system_prompt_for,
+            user_suffix=pc.user_suffix_for,
+        )
     raise ValueError(f"unknown provider {name!r} (choose from: {', '.join(PROVIDERS)})")
 
 

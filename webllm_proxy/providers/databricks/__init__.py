@@ -142,11 +142,30 @@ class DatabricksProvider(BrowserBackedProvider):
         *,
         workspace_url: str,
         style_rules: bool = True,
+        system_prompt=None,
+        user_suffix=None,
     ):
         super().__init__(session)
         self._lock = threading.Lock()
         self._workspace_url = workspace_url
         self._style_rules = style_rules
+        # `(slug | None) -> prompt-name | None`, e.g.
+        # `ProviderConfigBase.system_prompt_for`. Defaults to "never send one".
+        self._system_prompt = system_prompt or (lambda _slug: None)
+        # Same shape, `ProviderConfigBase.user_suffix_for` -- text appended to
+        # the end of the CURRENT turn's user message before it's sent (a
+        # per-turn "stay in role" nudge). Defaults to "never append one".
+        self._user_suffix = user_suffix or (lambda _slug: None)
+
+    def _apply_user_suffix(self, request: dict, model: str) -> dict:
+        """Return `request` with `user_suffix_for(model)`'s literal text (if
+        any) appended to the end of the last `role: user` message -- see
+        `utils.openai.append_user_suffix`. No-op if nothing is configured."""
+        suffix_text = self._user_suffix(model)
+        if not suffix_text:
+            return request
+        messages = wire.append_user_suffix(request.get("messages") or [], suffix_text)
+        return {**request, "messages": messages}
 
     # ---- models -----------------------------------------------------------
     def models(self) -> list[dict]:
@@ -189,11 +208,15 @@ class DatabricksProvider(BrowserBackedProvider):
     def _claude_completions(self, request: dict, model: str):
         stream = bool(request.get("stream"))
         effort = wire.normalize_effort(request)
+        request = self._apply_user_suffix(request, model)
         anthropic_body = convert.openai_to_anthropic(
             request, default_max_tokens=llmproxy.CLAUDE_MAX_TOKENS, effort=effort
         )
         body = llmproxy.build_llmproxy_envelope(
-            anthropic_body, model, style_rules=self._style_rules
+            anthropic_body,
+            model,
+            style_rules=self._style_rules,
+            system_prompt=self._system_prompt(model),
         )
         cid = wire.new_id()
         created = int(time.time())
@@ -329,7 +352,8 @@ class DatabricksProvider(BrowserBackedProvider):
     # ---- Azure GPT channel ------------------------------------------------
     def _azure_completions(self, request: dict, model: str):
         stream = bool(request.get("stream", True))
-        body = llmproxy.build_azure_body(request, model)
+        request = self._apply_user_suffix(request, model)
+        body = llmproxy.build_azure_body(request, model, system_prompt=self._system_prompt(model))
         resp_model = wire.join_model(NAME, model)
 
         self._lock.acquire()

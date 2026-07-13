@@ -56,6 +56,34 @@ def message_text(m: dict) -> str:
     return "" if c is None else str(c)
 
 
+def append_user_suffix(messages: list[dict], suffix: str) -> list[dict]:
+    """Return a copy of `messages` with `suffix` appended to the end of the
+    LAST `role: user` message's content -- a per-turn reminder (e.g. "stay in
+    character") appended right before the model responds, since long web-UI
+    chats can otherwise drift a model out of its assigned role over many
+    turns. Configured via `utils.config.ProviderConfigBase.user_suffix_for`.
+    No-op (returns `messages` as-is) if there's no user message or `suffix`
+    is empty."""
+    if not suffix:
+        return messages
+    idx = next(
+        (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
+        None,
+    )
+    if idx is None:
+        return messages
+    out = list(messages)
+    m = dict(out[idx])
+    content = m.get("content")
+    if isinstance(content, list):
+        m["content"] = [*content, {"type": "text", "text": suffix}]
+    else:
+        text = content if isinstance(content, str) else ("" if content is None else str(content))
+        m["content"] = f"{text}\n\n{suffix}".strip() if text else suffix
+    out[idx] = m
+    return out
+
+
 # ---- model namespacing ----------------------------------------------------
 def join_model(provider: str, slug: str) -> str:
     return f"{provider}{DELIM}{slug}"

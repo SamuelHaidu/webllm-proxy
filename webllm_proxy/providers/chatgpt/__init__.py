@@ -106,7 +106,7 @@ class _Planner:
     def __init__(self):
         self._sigs: list = []
 
-    def plan_turn(self, messages, tools, tool_choice, forced_name):
+    def plan_turn(self, messages, tools, tool_choice, forced_name, system_text=None):
         sigs = [_message_signature(m) for m in messages]
         prev = self._sigs
         continuing = bool(prev) and len(sigs) > len(prev) and sigs[: len(prev)] == prev
@@ -114,10 +114,16 @@ class _Planner:
         name_map = tags.tool_name_map(messages)
         if continuing:
             return _format_turns(messages[len(prev) :], name_map) or None, False
-        system_text = "\n\n".join(
-            wire.message_text(m) for m in messages if m.get("role") == "system"
+        # The client's own `role:"system"` messages are always ignored -- only
+        # a configured `system_text` (resolved from `utils.config` by the
+        # provider) is ever sent, see docs/discovery/2026-07-13-system-prompt-architecture.md.
+        # If no system prompt is configured for this model, send NOTHING at
+        # all -- not even the tool contract -- so tool-calling emulation for
+        # chatgpt only activates once the operator explicitly sets a
+        # `system_prompt` for this provider/model.
+        preamble = (
+            tags.build_preamble(system_text, tools, tool_choice, forced_name) if system_text else ""
         )
-        preamble = tags.build_preamble(system_text, tools, tool_choice, forced_name)
         last_user = max(
             (i for i, m in enumerate(messages) if m.get("role") == "user"), default=None
         )
@@ -157,11 +163,20 @@ def _trigger(page, *, new_conversation: bool, message: str):
 class ChatgptProvider(BrowserBackedProvider):
     name = NAME
 
-    def __init__(self, session: BrowserSession):
+    def __init__(self, session: BrowserSession, *, system_prompt=None, user_suffix=None):
         super().__init__(session)
         self._lock = threading.Lock()
         self._planner = _Planner()
         self._effort_support: dict[str, set[str]] | None = None
+        # `(slug | None) -> prompt-name | None`, e.g.
+        # `ProviderConfigBase.system_prompt_for` -- resolves which named
+        # `prompts/system_prompts/<name>.md` (if any) to send for a given
+        # model slug. Defaults to "never send one" if not wired in.
+        self._system_prompt = system_prompt or (lambda _slug: None)
+        # Same shape, `ProviderConfigBase.user_suffix_for` -- text appended to
+        # the end of THIS turn's message before it's sent (a per-turn "stay in
+        # role" nudge). Defaults to "never append one" if not wired in.
+        self._user_suffix = user_suffix or (lambda _slug: None)
 
     # ---- effort support (lazy) -------------------------------------------
     def _load_effort_support(self) -> dict[str, set[str]]:
@@ -259,11 +274,17 @@ class ChatgptProvider(BrowserBackedProvider):
             choice = "auto" if tools else "none"
         tools_active = bool(tools) and choice != "none"
 
+        prompt_name = self._system_prompt(model or None)
+        sys_text = default_store.get(prompt_name) if prompt_name else None
+
         text, new_conv = self._planner.plan_turn(
-            messages, tools if tools_active else None, choice, forced_name
+            messages, tools if tools_active else None, choice, forced_name, sys_text
         )
         if not text:
             return {"error": {"message": "no user message provided"}}
+        suffix_text = self._user_suffix(model or None)
+        if suffix_text:
+            text = f"{text}\n\n{suffix_text}".strip()
 
         cid = wire.new_id()
         created = int(time.time())

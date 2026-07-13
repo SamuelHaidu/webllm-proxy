@@ -19,6 +19,7 @@ from pathlib import Path
 from ...gateways.cloakbrowser import BrowserSession
 from ...utils import openai as wire
 from ...utils import tags
+from ...utils.prompts import default_store
 from ..base import BrowserBackedProvider
 from . import models
 from .signalr import SignalRParse
@@ -128,10 +129,12 @@ def _trigger(page, *, message: str, nav_url: str):
     page.keyboard.press("Enter")
 
 
-def _flatten(messages) -> tuple[str, str]:
-    """Collapse the OpenAI messages into (system_text, body_text). Copilot has no
-    system role or continuity API, so we send one combined turn."""
-    system_text = "\n\n".join(wire.message_text(m) for m in messages if m.get("role") == "system")
+def _flatten(messages) -> str:
+    """Collapse the OpenAI messages into one body_text. Copilot has no system
+    role or continuity API, so we send one combined turn; the client's own
+    `role:"system"` messages are always ignored (only a configured system
+    prompt, resolved by the caller, is ever sent -- see
+    docs/discovery/2026-07-13-system-prompt-architecture.md)."""
     name_map = tags.tool_name_map(messages)
     body_parts = []
     for m in messages:
@@ -140,16 +143,30 @@ def _flatten(messages) -> tuple[str, str]:
             body_parts.append(wire.message_text(m))
         elif role == "tool":
             body_parts.append(tags.format_tool_result(m, name_map))
-    return system_text, "\n\n".join(p for p in body_parts if p).strip()
+    return "\n\n".join(p for p in body_parts if p).strip()
 
 
 class CopilotProvider(BrowserBackedProvider):
     name = NAME
 
-    def __init__(self, session: BrowserSession, *, nav_url: str = NAV_URL):
+    def __init__(
+        self,
+        session: BrowserSession,
+        *,
+        nav_url: str = NAV_URL,
+        system_prompt=None,
+        user_suffix=None,
+    ):
         super().__init__(session)
         self._lock = threading.Lock()
         self._nav_url = nav_url
+        # `(slug | None) -> prompt-name | None`, e.g.
+        # `ProviderConfigBase.system_prompt_for`. Defaults to "never send one".
+        self._system_prompt = system_prompt or (lambda _slug: None)
+        # Same shape, `ProviderConfigBase.user_suffix_for` -- text appended to
+        # the end of THIS turn's message before it's sent (a per-turn "stay in
+        # role" nudge). Defaults to "never append one" if not wired in.
+        self._user_suffix = user_suffix or (lambda _slug: None)
 
     # ---- models -----------------------------------------------------------
     def models(self) -> list[dict]:
@@ -198,8 +215,14 @@ class CopilotProvider(BrowserBackedProvider):
             choice = "auto" if tools else "none"
         tools_active = bool(tools) and choice != "none"
 
-        system_text, body = _flatten(messages)
-        if tools_active:
+        prompt_name = self._system_prompt(request.get("model") or None)
+        system_text = default_store.get(prompt_name) if prompt_name else None
+        body = _flatten(messages)
+        # If no system prompt is configured for this model, send NOTHING at
+        # all -- not even the tool contract -- so tool-calling emulation for
+        # copilot only activates once the operator explicitly sets a
+        # `system_prompt` for this provider/model.
+        if tools_active and system_text:
             # Copilot's own model is safety-tuned against believing an absolute
             # "these are your only tools, nothing else exists" claim (it knows it
             # has real server-side tools); use the milder contract wording (see
@@ -217,6 +240,9 @@ class CopilotProvider(BrowserBackedProvider):
             text = "\n\n".join(p for p in (system_text, body) if p).strip()
         if not text:
             return {"error": {"message": "no user message provided"}}
+        suffix_text = self._user_suffix(request.get("model") or None)
+        if suffix_text:
+            text = f"{text}\n\n{suffix_text}".strip()
 
         cid = wire.new_id()
         created = int(time.time())

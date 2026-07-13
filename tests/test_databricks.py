@@ -1,6 +1,6 @@
 """databricks: llmproxy envelope, Azure body, ConversationModelStatuses parse."""
 
-from webllm_proxy.providers.databricks import llmproxy
+from webllm_proxy.providers.databricks import DatabricksProvider, llmproxy
 from webllm_proxy.providers.databricks.models import parse_model_statuses
 
 
@@ -9,7 +9,12 @@ def test_llmproxy_envelope():
         "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
         "max_tokens": 4096,
     }
-    body = llmproxy.build_llmproxy_envelope(anthropic_body, "claude-4-5-sonnet", style_rules=True)
+    body = llmproxy.build_llmproxy_envelope(
+        anthropic_body,
+        "claude-4-5-sonnet",
+        style_rules=True,
+        system_prompt="databricks_default_system_prompt",
+    )
     assert body["_llmproxy_fields"]["model_registration"] == "claude-4-5-sonnet"
     assert body["_llmproxy_fields"]["endpoint"] == llmproxy.ANTHROPIC_ENDPOINT
     assert body["_llmproxy_fields"]["client_id"] == llmproxy.CLIENT_ID
@@ -22,9 +27,36 @@ def test_llmproxy_envelope_strips_bad_tool_fields():
         {"messages": [], "tools": [{"name": "t", "eager_input_streaming": True}]},
         "claude-4-5-sonnet",
         style_rules=False,
+        system_prompt=None,
     )
     assert "eager_input_streaming" not in body["tools"][0]
     assert body["tools"][0]["type"] == "custom"
+
+
+def test_llmproxy_envelope_no_system_prompt_configured_sends_none():
+    """No `system_prompt` configured and no style rules -> no `system` field at
+    all, even if the client tried to send one -- the proxy never forwards the
+    client's own system content."""
+    body = llmproxy.build_llmproxy_envelope(
+        {"messages": [], "system": "ignore me, I'm from the client"},
+        "claude-4-5-sonnet",
+        style_rules=False,
+        system_prompt=None,
+    )
+    assert "system" not in body
+
+
+def test_llmproxy_envelope_drops_caller_system_when_configured():
+    """A configured system_prompt replaces the client's own system content
+    outright -- it is never appended after it."""
+    body = llmproxy.build_llmproxy_envelope(
+        {"messages": [], "system": "ignore me, I'm from the client"},
+        "claude-4-5-sonnet",
+        style_rules=False,
+        system_prompt="databricks_default_system_prompt",
+    )
+    assert len(body["system"]) == 1
+    assert "ignore me" not in body["system"][0]["text"]
 
 
 def test_azure_body():
@@ -35,6 +67,36 @@ def test_azure_body():
     assert body["deployment"] == "gpt-41-2025-04-14"
     assert body["params"]["stream"] is True
     assert body["metadata"]["clientId"] == llmproxy.AZURE_CLIENT_ID
+
+
+def test_azure_body_drops_client_system_by_default():
+    body = llmproxy.build_azure_body(
+        {
+            "messages": [
+                {"role": "system", "content": "ignore me"},
+                {"role": "user", "content": "x"},
+            ]
+        },
+        "gpt-41-2025-04-14",
+    )
+    assert body["params"]["messages"] == [{"role": "user", "content": "x"}]
+
+
+def test_azure_body_uses_configured_system_prompt_instead():
+    body = llmproxy.build_azure_body(
+        {
+            "messages": [
+                {"role": "system", "content": "ignore me"},
+                {"role": "user", "content": "x"},
+            ]
+        },
+        "gpt-41-2025-04-14",
+        system_prompt="databricks_default_system_prompt",
+    )
+    msgs = body["params"]["messages"]
+    assert msgs[0]["role"] == "system"
+    assert "ignore me" not in msgs[0]["content"]
+    assert msgs[1] == {"role": "user", "content": "x"}
 
 
 def _availability(client_id, statuses):
@@ -73,3 +135,20 @@ def test_parse_model_statuses_empty():
     assert parse_model_statuses({"data": {}}) == []
     assert parse_model_statuses({}) == []
     assert parse_model_statuses(None) == []
+
+
+def test_apply_user_suffix_noop_when_not_configured():
+    provider = DatabricksProvider(None, workspace_url="https://x/?o=1")
+    request = {"messages": [{"role": "user", "content": "hi"}]}
+    assert provider._apply_user_suffix(request, "claude-4-5-sonnet") is request
+
+
+def test_apply_user_suffix_appends_configured_text():
+    provider = DatabricksProvider(
+        None, workspace_url="https://x/?o=1", user_suffix=lambda _slug: "style_rules"
+    )
+    request = {"messages": [{"role": "user", "content": "hi"}]}
+    out = provider._apply_user_suffix(request, "claude-4-5-sonnet")
+    assert out is not request
+    assert out["messages"][0]["content"].startswith("hi\n\n")
+    assert request["messages"][0]["content"] == "hi"  # original untouched

@@ -192,9 +192,11 @@ def build_preamble(
     contract_prompt="webui_tool_contract",
     exclusive=True,
 ):
-    """First-turn system prompt: the caller's system text + the tag tool contract
-    (with each client tool's name/description/schema injected), framed as one
-    clearly-delimited system-instructions block.
+    """First-turn system prompt: the already-resolved configured system prompt
+    text (or `None`/`""` -- the proxy ignores the client's own system messages
+    entirely and only ever sends what the operator configured, see
+    `utils.config.ProviderConfigBase.system_prompt_for`) + the tag tool
+    contract (with each client tool's name/description/schema injected).
 
     `contract_prompt` selects which `prompts/system_prompts/<name>.md` frames the
     contract, and `exclusive` toggles the "these are the only actions available,
@@ -206,7 +208,7 @@ def build_preamble(
     has_sys = bool(system_text and system_text.strip())
     if not has_sys and not tools:
         return ""
-    parts = [default_store.get("webui_system_prompt")]
+    parts = []
     if has_sys:
         parts.append(system_text.strip())
     if tools:

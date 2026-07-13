@@ -33,6 +33,19 @@ class ModelConfig(BaseModel):
     # estimate uses -- overrides the provider-level `tokenizer` default for
     # just this one model.
     tokenizer: str
+    # Name of a `prompts/system_prompts/<name>.md` file (looked up via
+    # `utils.prompts.default_store`) to send as this model's system prompt --
+    # overrides the provider-level `system_prompt` below for just this one
+    # model. `None` (the default) falls back to the provider-level setting.
+    system_prompt: str | None = None
+    # Literal text (typed directly here, NOT a `prompts/system_prompts/`
+    # file name) appended to the end of the CURRENT turn's user message
+    # before it's sent upstream -- a per-turn "stay in character/role" nudge,
+    # since long web-UI chats can otherwise drift a model out of its
+    # assigned role. Overrides the provider-level `user_suffix` below for
+    # just this one model. `None` (the default) falls back to the
+    # provider-level setting.
+    user_suffix: str | None = None
 
     @field_validator("tokenizer")
     @classmethod
@@ -56,11 +69,46 @@ class ProviderConfigBase(BaseModel):
     # wire id "databricks__claude-4-5-sonnet") -- wins over `tokenizer` above
     # for that one model.
     models: dict[str, ModelConfig] = Field(default_factory=dict)
+    # Name of a `prompts/system_prompts/<name>.md` file to send as this
+    # provider's default system prompt. `None` (the default) means the proxy
+    # sends NO system prompt at all -- the client's own system messages are
+    # always ignored (see providers' code); a system prompt is only ever sent
+    # when explicitly configured here or per-model below.
+    system_prompt: str | None = None
+    # Literal text (typed directly here, NOT a `prompts/system_prompts/`
+    # file name) appended to the end of the CURRENT turn's user message
+    # before it's sent upstream -- a per-turn reminder (e.g. "stay in
+    # character/role") rather than a one-time system prompt, since long
+    # web-UI chats can otherwise drift a model out of its assigned role over
+    # many turns. `None` (the default) appends nothing. Per-model override:
+    # `models.<slug>.user_suffix`.
+    user_suffix: str | None = None
 
     @field_validator("tokenizer")
     @classmethod
     def _known_tokenizer(cls, v: str) -> str:
         return _check_tokenizer(v)
+
+    def system_prompt_for(self, slug: str | None) -> str | None:
+        """Resolve which named prompt (if any) to send for `slug`: the
+        per-model override wins, else the provider-level default, else
+        `None` (send nothing)."""
+        if slug:
+            override = self.models.get(slug)
+            if override is not None and override.system_prompt:
+                return override.system_prompt
+        return self.system_prompt
+
+    def user_suffix_for(self, slug: str | None) -> str | None:
+        """Same resolution order as `system_prompt_for`, but the result is
+        literal text to append, not a prompt-file name to look up: per-model
+        override wins, else the provider-level default, else `None` (append
+        nothing)."""
+        if slug:
+            override = self.models.get(slug)
+            if override is not None and override.user_suffix:
+                return override.user_suffix
+        return self.user_suffix
 
 
 class ChatgptConfig(ProviderConfigBase):
