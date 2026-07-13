@@ -21,6 +21,21 @@ def test_openai_to_anthropic_basic():
     assert body["max_tokens"] == 1000
 
 
+def test_openai_to_anthropic_always_streams_upstream():
+    # Regardless of the OpenAI client's own `stream` field, the upstream
+    # Anthropic body must request `stream: true` -- our capture layer only
+    # understands `text/event-stream`; a non-streaming upstream response
+    # comes back as buffered `application/json` and silently produces an
+    # empty reply (found live). Client-side stream/non-stream is handled by
+    # the provider collapsing the SSE itself, not by this flag.
+    for client_stream in (False, True, None):
+        req: dict = {"messages": [{"role": "user", "content": "hi"}]}
+        if client_stream is not None:
+            req["stream"] = client_stream
+        body = convert.openai_to_anthropic(req, default_max_tokens=64000)
+        assert body["stream"] is True
+
+
 def test_openai_to_anthropic_tools_and_tool_result():
     req = {
         "messages": [
@@ -106,6 +121,66 @@ def test_anthropic_sse_decode():
     assert ("reasoning", "hmm") in events
     assert ("content", "Hello") in events
     assert ("done", "stop") in events
+
+
+def test_anthropic_sse_captures_real_usage():
+    sse = "".join(
+        f"data: {json.dumps(d)}\n\n"
+        for d in [
+            {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 1885,
+                        "cache_creation_input_tokens": 9673,
+                        "cache_read_input_tokens": 34483,
+                    }
+                },
+            },
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "hi"},
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 91},
+            },
+            {"type": "message_stop"},
+        ]
+    )
+    p = convert.AnthropicSSE()
+    list(p.feed(sse)) + list(p.flush())
+    assert p.usage == {
+        "input_tokens": 1885,
+        "cache_creation_input_tokens": 9673,
+        "cache_read_input_tokens": 34483,
+        "output_tokens": 91,
+    }
+    assert p.openai_usage() == {
+        "prompt_tokens": 1885 + 9673 + 34483,
+        "completion_tokens": 91,
+        "total_tokens": 1885 + 9673 + 34483 + 91,
+    }
+
+
+def test_anthropic_sse_no_usage_reported():
+    p = convert.AnthropicSSE()
+    list(p.feed('data: {"type":"message_stop"}\n\n')) + list(p.flush())
+    assert p.usage == {}
+    assert p.openai_usage() is None
+
+
+def test_anthropic_usage_to_openai_empty_and_partial():
+    assert convert.anthropic_usage_to_openai({}) is None
+    assert convert.anthropic_usage_to_openai({"input_tokens": 0, "output_tokens": 0}) is None
+    assert convert.anthropic_usage_to_openai({"input_tokens": 10}) == {
+        "prompt_tokens": 10,
+        "completion_tokens": 0,
+        "total_tokens": 10,
+    }
 
 
 def test_anthropic_sse_tool_use():

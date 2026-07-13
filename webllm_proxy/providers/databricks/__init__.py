@@ -199,12 +199,13 @@ class DatabricksProvider(BrowserBackedProvider):
         created = int(time.time())
         resp_model = wire.join_model(NAME, model)
 
+        parser = convert.AnthropicSSE()
         self._lock.acquire()
         try:
             out_q = self.session.run_turn(
                 trigger=self._make_trigger(llmproxy.LLMPROXY_PATH, body),
                 capture_url=lambda url: url.split("?", 1)[0].endswith(llmproxy.LLMPROXY_PATH),
-                parse=convert.AnthropicSSE(),
+                parse=parser,
             )
         except Exception as e:
             self._lock.release()
@@ -213,7 +214,16 @@ class DatabricksProvider(BrowserBackedProvider):
         if stream:
             return self._stream_claude(out_q, cid, created, resp_model)
         try:
-            return self._nonstream_claude(out_q, cid, created, resp_model)
+            result = self._nonstream_claude(out_q, cid, created, resp_model)
+            # Bedrock reports real usage on this channel (message_start/
+            # message_delta) -- prefer it; only estimate if it's ever absent.
+            return wire.attach_usage(
+                result,
+                request.get("messages") or [],
+                request.get("tools"),
+                resp_model,
+                real_usage=parser.openai_usage(),
+            )
         finally:
             self._lock.release()
 
@@ -339,7 +349,9 @@ class DatabricksProvider(BrowserBackedProvider):
             return self._stream_azure(out_q)
         try:
             sse = _collect_data(out_q)
-            return wire.assemble_completion(sse, resp_model)
+            return wire.assemble_completion(
+                sse, resp_model, request.get("messages") or [], request.get("tools")
+            )
         finally:
             self._lock.release()
 

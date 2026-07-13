@@ -90,12 +90,22 @@ def openai_messages_to_anthropic(messages) -> tuple[list, list]:
 
 
 def openai_to_anthropic(req: dict, *, default_max_tokens: int, effort: str | None = None) -> dict:
-    """Build an Anthropic Messages request body from an OpenAI request."""
+    """Build an Anthropic Messages request body from an OpenAI request.
+
+    `stream` is always `True` upstream regardless of the OpenAI client's own
+    `stream` field: our capture layer (`AnthropicSSE`) only understands
+    `text/event-stream`, and a non-streaming request gets a plain buffered
+    `application/json` body instead that it can't parse (silently producing
+    an empty reply -- found live, see
+    docs/discovery/2026-07-13-token-usage-estimation.md). The client-facing
+    stream/non-stream choice is handled entirely on our side (`_stream_claude`
+    vs `_nonstream_claude` collapsing the SSE), exactly like the Azure/GPT
+    channel already does (`build_azure_body` hardcodes `stream: True` too)."""
     system, messages = openai_messages_to_anthropic(req.get("messages") or [])
     body: dict = {
         "messages": messages,
         "max_tokens": req.get("max_tokens") or default_max_tokens,
-        "stream": bool(req.get("stream", True)),
+        "stream": True,
     }
     if system:
         body["system"] = system
@@ -130,6 +140,12 @@ class AnthropicSSE:
         self._block_types: dict[int, str | None] = {}
         self.finish_reason = "stop"
         self._done = False
+        # Real usage, merged in from `message_start.message.usage` (input side)
+        # and `message_delta.usage` (output side) as they arrive -- Bedrock's
+        # llmproxy channel reports both (see
+        # docs/discovery/2026-07-10-databricks-llmproxy.md). Empty if upstream
+        # never sent one; read after the turn completes (`openai_usage()`).
+        self.usage: dict = {}
 
     def feed(self, chunk: str):
         events = []
@@ -164,31 +180,49 @@ class AnthropicSSE:
 
     def _handle(self, obj):
         t = obj.get("type")
-        if t == "content_block_start":
-            idx = obj.get("index", 0)
-            block = obj.get("content_block") or {}
-            self._block_types[idx] = block.get("type")
-            if block.get("type") == "tool_use":
-                return [
-                    ("tool_start", {"index": idx, "id": block.get("id"), "name": block.get("name")})
-                ]
-            return []
-        if t == "content_block_delta":
-            return self._delta(obj)
-        if t == "message_delta":
-            stop = (obj.get("delta") or {}).get("stop_reason")
-            if stop:
-                self.finish_reason = _STOP_MAP.get(stop, "stop")
-            return []
-        if t == "message_stop":
-            if not self._done:
-                self._done = True
-                return [("done", self.finish_reason)]
-            return []
-        if t == "error":
-            msg = (obj.get("error") or {}).get("message", "anthropic stream error")
-            return [("error", msg)]
+        handler = {
+            "message_start": self._message_start,
+            "content_block_start": self._content_block_start,
+            "content_block_delta": self._delta,
+            "message_delta": self._message_delta,
+            "message_stop": self._message_stop,
+            "error": self._error,
+        }.get(t)
+        return handler(obj) if handler else []
+
+    def _message_start(self, obj):
+        usage = ((obj.get("message") or {}).get("usage")) or {}
+        if usage:
+            self.usage.update(usage)
         return []
+
+    def _content_block_start(self, obj):
+        idx = obj.get("index", 0)
+        block = obj.get("content_block") or {}
+        self._block_types[idx] = block.get("type")
+        if block.get("type") == "tool_use":
+            return [
+                ("tool_start", {"index": idx, "id": block.get("id"), "name": block.get("name")})
+            ]
+        return []
+
+    def _message_delta(self, obj):
+        stop = (obj.get("delta") or {}).get("stop_reason")
+        if stop:
+            self.finish_reason = _STOP_MAP.get(stop, "stop")
+        if obj.get("usage"):
+            self.usage.update(obj["usage"])
+        return []
+
+    def _message_stop(self, _obj):
+        if self._done:
+            return []
+        self._done = True
+        return [("done", self.finish_reason)]
+
+    def _error(self, obj):
+        msg = (obj.get("error") or {}).get("message", "anthropic stream error")
+        return [("error", msg)]
 
     def _delta(self, obj):
         idx = obj.get("index", 0)
@@ -201,3 +235,30 @@ class AnthropicSSE:
         if dt == "input_json_delta":
             return [("tool_args", {"index": idx, "partial_json": delta.get("partial_json", "")})]
         return []
+
+    def openai_usage(self) -> dict | None:
+        """`self.usage` (Anthropic shape) -> an OpenAI `usage` dict, or `None`
+        if upstream never reported one (caller should estimate instead)."""
+        return anthropic_usage_to_openai(self.usage)
+
+
+def anthropic_usage_to_openai(usage: dict) -> dict | None:
+    """Anthropic `message.usage`/`message_delta.usage` -> OpenAI `usage` shape.
+    `prompt_tokens` sums `input_tokens` + both cache fields (the real total
+    context length processed, not just the newly-billed portion). `None` if
+    no usable numbers were ever captured."""
+    if not usage:
+        return None
+    prompt = (
+        usage.get("input_tokens", 0)
+        + usage.get("cache_creation_input_tokens", 0)
+        + usage.get("cache_read_input_tokens", 0)
+    )
+    completion = usage.get("output_tokens", 0)
+    if not prompt and not completion:
+        return None
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
