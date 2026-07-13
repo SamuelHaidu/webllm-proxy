@@ -7,10 +7,34 @@ why this exists and the discovery workflow.
 
 Each file below is a dated log entry. Read newest-first for current
 findings; older entries may be superseded (note if so). Entries below are
-tagged **[chatgpt]**, **[databricks]**, or **[copilot]**.
+tagged **[chatgpt]**, **[databricks]**, **[copilot]**, or **[tokens]** (cross-
+cutting utils work, not a backend-specific reverse-engineering finding).
 
 ## Entries
 
+- **[tokens]** `2026-07-13-token-usage-estimation.md` — real `usage.prompt_tokens`/
+  `completion_tokens` (was a zeros placeholder). Ported `coder/ai-tokenizer`
+  (MIT): real BPE counts via `tiktoken` (its 3 built-in vocabs, plus a
+  vendored `claude` vocab table tiktoken doesn't ship) + a small per-model
+  chat-format overhead model on top, adapted from Zod- to JSON-Schema tool
+  walking. No per-model-slug mapping ported (wire ids don't match upstream's
+  naming) -- instead, which vendored profile applies is **YAML-configurable at
+  two levels**: a provider-level default (`providers.<name>.tokenizer`) and a
+  per-model override (`providers.<name>.models.<slug>.tokenizer`, for when one
+  provider mixes model families, e.g. databricks serving both Claude and GPT),
+  both validated at config load. Defaults to `openai/gpt-5` for every provider
+  until the operator says otherwise. Wired into all three providers'
+  non-streaming completion paths via a new `wire.attach_usage()` fallback
+  (prefers real upstream `usage` when a provider actually reports one).
+  **Update (live testing):** found and fixed two real bugs in databricks'
+  Claude channel that made it return a completely empty reply for any
+  non-streaming request -- `AnthropicSSE` never captured Anthropic's own
+  `message_start`/`message_delta` usage events despite this being the
+  documented intended mapping since 2026-07-10, and `openai_to_anthropic()`
+  forwarded the client's `stream` field upstream instead of always requesting
+  SSE (a non-streaming request got a plain `application/json` body the SSE
+  parser silently produced nothing from). Both channels now return 100% real
+  `usage` in the common case; see the file for the full trace.
 - **[copilot]** `2026-07-13-copilot-live-test.md` — added a tiny opt-in live smoke
   for the Copilot **deep-thinking** model (`tests/smoke_copilot_reasoning.py`, 2
   turns max, gated by `WEBLLM_PROXY_COPILOT_LIVE=1` to dodge the request-throttle).
