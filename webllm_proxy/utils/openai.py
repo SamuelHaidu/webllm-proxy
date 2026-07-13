@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 
-from .tokens import usage
+from .tokens import estimate_usage, usage
 
 DELIM = "__"
 
@@ -90,16 +90,47 @@ def chunk(cid: str, created: int, model: str, delta: dict, finish: str | None = 
     )
 
 
-def completion(cid: str, created: int, model: str, message: dict, finish: str) -> dict:
-    """One non-streaming `chat.completion` object."""
+def completion(
+    cid: str, created: int, model: str, message: dict, finish: str, usage_dict: dict | None = None
+) -> dict:
+    """One non-streaming `chat.completion` object. `usage_dict` defaults to
+    zeros; pass a real or estimated one when available (see
+    `utils.tokens.estimate_usage`)."""
     return {
         "id": cid,
         "object": "chat.completion",
         "created": created,
         "model": model,
         "choices": [{"index": 0, "message": message, "finish_reason": finish}],
-        "usage": usage(),
+        "usage": usage_dict if usage_dict is not None else usage(),
     }
+
+
+def attach_usage(
+    result: dict,
+    messages: list[dict],
+    tools: list[dict] | None,
+    model: str,
+    real_usage: dict | None = None,
+) -> dict:
+    """Post-process a non-streaming `completion()` result: set its `usage` to
+    `real_usage` if the provider actually got one from upstream, otherwise
+    estimate it from the request `messages`/`tools` plus the assembled reply
+    (text + any tool-call name/arguments). No-op on an error dict (no
+    `choices`) -- providers can call this unconditionally on their return
+    value."""
+    if not isinstance(result, dict) or "choices" not in result:
+        return result
+    if real_usage is not None:
+        result["usage"] = real_usage
+        return result
+    msg = (result["choices"][0] or {}).get("message") or {}
+    content = msg.get("content") or ""
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        content += (fn.get("name") or "") + (fn.get("arguments") or "")
+    result["usage"] = estimate_usage(messages, tools, content, model)
+    return result
 
 
 def unavailable_error(message: str = "session initializing") -> dict:
@@ -146,8 +177,12 @@ def _apply_choice(ch: dict, content: list, tool_calls: dict, role: str, finish):
     return role, finish
 
 
-def assemble_completion(sse_text: str, model: str) -> dict:
-    """Fold an OpenAI streaming SSE into one `chat.completion` (non-stream reply)."""
+def assemble_completion(
+    sse_text: str, model: str, messages: list[dict] | None = None, tools: list[dict] | None = None
+) -> dict:
+    """Fold an OpenAI streaming SSE into one `chat.completion` (non-stream
+    reply). Prefers upstream's own `usage` if the SSE carried one; otherwise,
+    if `messages` was passed, falls back to an estimate (`utils.tokens`)."""
     content: list = []
     tool_calls: dict = {}
     role, finish, up_usage = "assistant", None, None
@@ -159,7 +194,7 @@ def assemble_completion(sse_text: str, model: str) -> dict:
     message = {"role": role, "content": "".join(content) or None}
     if tool_calls:
         message["tool_calls"] = [tool_calls[k] for k in sorted(tool_calls)]
-    out = completion(new_id(), int(time.time()), model, message, finish or "stop")
-    if up_usage:
-        out["usage"] = up_usage
-    return out
+    usage_dict = up_usage
+    if usage_dict is None and messages is not None:
+        usage_dict = estimate_usage(messages, tools, "".join(content), model)
+    return completion(new_id(), int(time.time()), model, message, finish or "stop", usage_dict)

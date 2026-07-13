@@ -236,16 +236,19 @@ class CopilotProvider(BrowserBackedProvider):
             self._lock.release()
             return {"error": {"message": str(e)}}
 
+        used_tools = tools if tools_active else None
         if tools_active:
             try:
-                return self._tool_response(out_q, cid, created, resp_model, stream)
+                result = self._tool_response(out_q, cid, created, resp_model, stream)
+                return wire.attach_usage(result, messages, used_tools, resp_model)
             finally:
                 if not stream:
                     self._lock.release()
         if stream:
             return self._stream_text(out_q, cid, created, resp_model)
         try:
-            return self._nonstream_text(out_q, cid, created, resp_model)
+            result = self._nonstream_text(out_q, cid, created, resp_model)
+            return wire.attach_usage(result, messages, used_tools, resp_model)
         finally:
             self._lock.release()
 

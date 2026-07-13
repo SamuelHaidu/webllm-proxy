@@ -9,12 +9,15 @@ import sys
 
 from .http import build_app
 from .providers import build_enabled
+from .utils import tokens
 from .utils.config import Config
 
 log = logging.getLogger(__name__)
 
 
 def serve(config: Config) -> int:
+    tokens.configure_profiles(config.tokenizer_profiles())
+    tokens.configure_model_profiles(config.model_tokenizer_overrides())
     names = config.enabled_providers()
     if not names:
         print("FATAL: no providers enabled in the config file", file=sys.stderr)
