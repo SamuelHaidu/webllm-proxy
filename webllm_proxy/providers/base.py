@@ -1,49 +1,53 @@
-"""Shared base for browser-backed providers.
-
-Every CloakBrowser provider repeats the same config boilerplate: read
-`host/port/profile_dir/headless/nav_url` from its env-driven `config` module.
-`BrowserProvider` implements that once; concrete providers just set `config` and
-implement the browser hooks (`authed`/`trigger`/`capture_match`/
-`make_accumulator`) + `register_routes`.
-
-The full browser contract still lives on `domain.ports.Provider` (unchanged);
-this base only supplies the concrete config properties, so `Provider` stays the
-single ABC the server/CLI depend on.
+"""The one seam left in the app: a provider exposes exactly two methods,
+`models()` and `completions()`. Everything else (browser transport, wire
+conversion, tags) is a plain utility the provider calls.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from collections.abc import Iterator
+from typing import Protocol, runtime_checkable
 
-from ..domain.ports import Provider
+from ..gateways.cloakbrowser import BrowserSession
 
 
-class BrowserProvider(Provider):
-    #: the provider's env-driven config module; must expose
-    #: HOST, PORT, PROFILE_DIR, HEADLESS and NAV_URL.
-    config: Any
+@runtime_checkable
+class Provider(Protocol):
+    name: str
 
-    def __init__(self, host: str | None = None, port: int | None = None):
-        self._host = host or self.config.HOST
-        self._port = port or self.config.PORT
+    def models(self) -> list[dict]:
+        """OpenAI `/v1/models` `data` entries; ids namespaced `<name>__<slug>`."""
+        ...
+
+    def completions(self, request: dict) -> dict | Iterator[bytes]:
+        """An OpenAI `chat.completion` (non-stream) or an SSE byte iterator
+        (stream). Handles tools + reasoning internally."""
+        ...
+
+
+class BrowserBackedProvider:
+    """Shared lifecycle for the three browser-backed providers: owns a
+    `BrowserSession` and forwards readiness. Subclasses implement `models()` /
+    `completions()`."""
+
+    name = "base"
+
+    def __init__(self, session: BrowserSession):
+        self.session = session
 
     @property
-    def profile_dir(self) -> Path:
-        return self.config.PROFILE_DIR
+    def ready(self) -> bool:
+        return self.session.ready
 
     @property
-    def nav_url(self) -> str:
-        return self.config.NAV_URL
+    def error(self) -> str | None:
+        return self.session.error
 
-    @property
-    def headless(self) -> bool:
-        return self.config.HEADLESS
+    def start(self) -> None:
+        self.session.start()
 
-    @property
-    def host(self) -> str:
-        return self._host
+    def wait_ready(self, timeout: float = 90.0) -> bool:
+        return self.session.wait_ready(timeout)
 
-    @property
-    def port(self) -> int:
-        return self._port
+    def close(self) -> None:
+        self.session.close()
