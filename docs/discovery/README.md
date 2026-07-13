@@ -7,10 +7,70 @@ why this exists and the discovery workflow.
 
 Each file below is a dated log entry. Read newest-first for current
 findings; older entries may be superseded (note if so). Entries below are
-tagged **[chatgpt]** or **[databricks]**.
+tagged **[chatgpt]**, **[databricks]**, or **[copilot]**.
 
 ## Entries
 
+- **[copilot]** `2026-07-13-copilot-live-test.md` — added a tiny opt-in live smoke
+  for the Copilot **deep-thinking** model (`tests/smoke_copilot_reasoning.py`, 2
+  turns max, gated by `WEBLLM_PROXY_COPILOT_LIVE=1` to dodge the request-throttle).
+  Found (and fixed) **two** login-detection bugs in a row: `authed()` was first
+  hostname-only (false-positived the signed-out splash), then a title-based fix
+  was *also* wrong (`m365.cloud.microsoft/`'s title stays "... - Sign in" even
+  when logged in, so the login poll could never succeed there). **Real fix**:
+  drive/detect via `m365.cloud.microsoft/chat` — a logged-out session can't reach
+  it (bounces to `login.*`), a logged-in one always lands there; fallback to a
+  live composer-presence check off that path. Added `login_steer()` to nudge a
+  post-login browser back to the app if it settles on an off-app page
+  (`office.com`). **Live-verified end to end**: `authed()` now correctly reports
+  the logged-in session, and the gated smoke's both turns (non-stream + stream to
+  `copilot__Reasoning`) passed with a correct real answer. `tests/test_copilot_auth.py`
+  covers the new signal + `login_steer`. **Then**: replaced the static `_TONES`
+  model list with **live discovery** from `POST /chat {action:RefreshNavPane}`'s
+  `modelSelectorMetadata` (`providers/copilot/models.py`, no static list, no
+  family/name mapping — matches the Databricks resolution's principle);
+  live-verified all 5 real ids come back. Added a chat + emulated-tool-calling
+  smoke (`tests/smoke_copilot_chat_tools.py`): **plain chat works live**;
+  **emulated `<tool>` tag calling does not** — confirmed across 4 live variants
+  (2 tools, default/softened/strengthened contract prompts) that M365 Copilot's
+  own alignment refuses externally-declared tool schemas outright, real
+  alternative or not, a genuine model constraint (not a prompt bug) — shipped a
+  milder contract path anyway (`tags.build_preamble`'s new `contract_prompt`/
+  `exclusive` params, chatgpt unaffected) and marked the test `xfail(strict=False)`
+  so it's honest now and would loudly flip to `XPASS` if that ever changes.
+  `poe check` green (59 tests).
+- **[databricks]** `2026-07-13-databricks-model-discovery.md` — **Databricks model
+  listing is now fully automatic** (resolves task 1 below). Pinned the
+  `graphql/ConversationModelStatuses` query and found the operation is
+  **server-safelisted**: `x-databricks-operation-identifier` is a persisted-op
+  signature over operationName+query+**variables** (not a recomputable hash), so
+  the request must be **replayed verbatim** (a trimmed single-clientId or
+  reformatted query 400s "Graphql operation not authentic"). Pinned it as
+  `providers/databricks/model_discovery.json`; `models()` replays it, filters
+  in-page to `editor-assistant-agent-mode`, and lists **every** AVAILABLE name
+  verbatim as `databricks__<name>` (no family mapping/flags/filtering; channel
+  routing `gpt*`→Azure / else→Anthropic is completions-only). **Removed the
+  static `models`/`openai_models` config + code.** Live probe
+  (`scripts/dbx_models_probe.py`, new `discover` mode) → **10 usable chat models**
+  (gpt-4o ×4, gpt-4.1 ×3, gpt-5-mini/nano, claude-4-5-sonnet); `*-combined` is
+  entitled-but-500, embeddings/ghosttext skipped; gpt-5 rejects a non-default
+  `temperature`. Also refreshed the captured Genie Code system prompt (37 KB).
+- **[databricks][copilot]** `2026-07-13-open-model-discovery-tasks.md` — after the
+  architecture rebuild, the two remaining live-session tasks to make automatic
+  model listing fully hands-off: pin the Databricks `ConversationModelStatuses`
+  GraphQL query/response (and whether it carries the Azure `gpt-*` deployments),
+  and capture the Copilot M365 `RefreshNavPane` capability manifest.
+- **[chatgpt]** `2026-07-12-emulated-thinking.md` — **Emulated "thinking mode"**
+  for the `webllm-agent` emulated agent: since chatgpt.com reasons poorly inline,
+  each pi turn runs **two independent fresh chats** — a reasoning chat that
+  returns a `<thinking>` block (self-questioning, competing hypotheses, edge-case
+  enumeration, a "Wait — is that verified?" recheck) surfaced as a **native pi
+  reasoning block**, then an action chat that receives the thinking and emits one
+  command; a prose (non-action) reply loops back into the reasoning chat before
+  being accepted. Key constraint driving the design: the proxy's single
+  `ConversationPlanner` can't thread two interleaved conversations, so **each call
+  is one self-contained user message**. On by default; toggle with `/webllm-agent
+  thinking on|off` (`WEBLLM_CHATGPT_THINKING`). Code in `integrations/pi/src/agentThinking.ts`.
 - **[databricks]** `2026-07-12-genie-code-agent.md` — **Reproducing the real
   Genie Code agent** (browser experience in the terminal via pi, tools executed
   **remotely**, pi a thin client). Reverse-engineered from the real Genie Code
