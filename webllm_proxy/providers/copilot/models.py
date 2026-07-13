@@ -1,99 +1,79 @@
-"""Edition-agnostic, normalized data model.
+"""Live model discovery from the Copilot capability manifest.
 
-Every edition/protocol is decoded into these types, so callers never see
-SignalR frames, `appendText` events, `tone` vs `mode`, etc. This is the public
-surface a UI or an API bridge consumes.
+`POST /chat {"action": "RefreshNavPane"}` is the shell's own data endpoint (not
+chat completion); it returns, among other things,
+`store.bizchatAsAgentGpt.clientPreferences.modelSelectorMetadata`, an object
+shaped:
+
+    {
+      "defaultModelSelectionId": "Magic",
+      "availableModelSelectionOptions": [
+        {"id": "Magic", "type": "item", "menuItemTitle": "Auto", ...},
+        {"id": "Chat", "type": "item", "menuItemTitle": "Quick Response", ...},
+        {"itemGroup": [{"id": "Gpt_5_5_Chat", "type": "item", ...}, ...],
+         "id": "OpenAI", "type": "itemGroup", "menuItemTitle": "GPT", ...},
+        ...
+      ]
+    }
+
+`availableModelSelectionOptions` is a flat/nested mix: plain `item`s at the top
+level, and `itemGroup`s that nest a further list of `item`s (one level deep in
+every capture seen so far; `_flatten` recurses regardless). No entitlement gate
+observed here (unlike Databricks) -- whatever the manifest lists is what the
+account can select.
 """
 
 from __future__ import annotations
 
-import enum
-from dataclasses import dataclass, field
+# In-page: POST the manifest request and return just the one object we need
+# (not the ~8 KB manifest) so parsing/validation stays in Python and testable.
+MANIFEST_JS = r"""
+async () => {
+  try {
+    const res = await fetch('/chat', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {'content-type': 'application/json', 'accept': 'application/json'},
+      body: JSON.stringify({action: 'RefreshNavPane'}),
+    });
+    if (!res.ok) return {error: res.status};
+    const j = await res.json();
+    const meta = ((((j || {}).store || {}).bizchatAsAgentGpt || {}).clientPreferences || {})
+      .modelSelectorMetadata;
+    return {data: meta || null};
+  } catch (e) {
+    return {error: String(e)};
+  }
+}
+"""
 
 
-class Model(enum.Enum):
-    """Normalized model/effort selector, mapped per edition (`tone`/`mode`)."""
-
-    AUTO = "auto"  # let the service decide (M365 `Magic`, consumer `smart`)
-    FAST = "fast"  # quick, no reasoning (M365 `Chat`)
-    THINK = "think"  # reasoning / "think deeper" (M365 `Reasoning`)
-    RESEARCH = "research"  # deep research (consumer `deep-research`)
-
-
-@dataclass(slots=True)
-class ModelInfo:
-    """A concrete, edition-specific model/mode the service currently offers.
-    Discovered from the edition's capability document, not hardcoded."""
-
-    id: str  # wire value: M365 `tone` / consumer `mode`
-    title: str | None = None  # human label ("Think Deeper")
-    description: str | None = None
-    reasoning: bool = False  # a "thinking"/extended-reasoning model
-    family: str | None = None  # e.g. "gpt-5.5"
-    default: bool = False  # the service's default selection
+def _flatten(options, out: list[dict]) -> None:
+    for it in options or []:
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") == "itemGroup":
+            _flatten(it.get("itemGroup"), out)
+        elif it.get("type") == "item" and it.get("id"):
+            out.append(
+                {
+                    "id": it["id"],
+                    "title": it.get("menuItemTitle") or it.get("shortTitle") or it["id"],
+                    "description": it.get("menuItemDescription"),
+                }
+            )
 
 
-@dataclass(slots=True)
-class Citation:
-    title: str | None = None
-    url: str | None = None
-    snippet: str | None = None
-
-
-@dataclass(slots=True)
-class Suggestion:
-    text: str
-
-
-@dataclass(slots=True)
-class Throttling:
-    used: int | None = None
-    maximum: int | None = None
-
-    @property
-    def at_limit(self) -> bool:
-        return self.used is not None and self.maximum is not None and self.used >= self.maximum
-
-
-# ---- streamed events -------------------------------------------------------
-@dataclass(slots=True)
-class Delta:
-    """An incremental chunk of the assistant's answer (always incremental, even
-    for the cumulative SignalR protocol — the codec diffs it for you)."""
-
-    text: str
-
-
-@dataclass(slots=True)
-class Progress:
-    """A non-answer status event interleaved in the stream."""
-
-    kind: str  # "search" | "thinking" | "tool" | "code" | "image" | "generic"
-    text: str = ""
-
-
-@dataclass(slots=True)
-class Final:
-    """Terminal event of a turn: the complete answer plus metadata."""
-
-    text: str
-    citations: list[Citation] = field(default_factory=list)
-    suggestions: list[Suggestion] = field(default_factory=list)
-    throttling: Throttling | None = None
-    conversation_id: str | None = None
-    title: str | None = None
-
-
-# A streamed turn yields these, terminated by exactly one `Final`.
-Event = Delta | Progress | Final
-
-
-@dataclass(slots=True)
-class ConversationRef:
-    """Handle to a conversation. `id` is always required; `signature` is the
-    optional M365 per-conversation signature (usually empty); `extra` carries
-    edition-specific bits (e.g. extra WS query params)."""
-
-    id: str
-    signature: str | None = None
-    extra: dict = field(default_factory=dict)
+def parse_manifest(response) -> list[dict]:
+    """`{"data": <modelSelectorMetadata>}` -> flattened `[{id, title, description}]`,
+    every leaf `item` from `availableModelSelectionOptions` (itemGroups expanded),
+    in manifest order, verbatim -- no filtering, no family classification."""
+    try:
+        options = response["data"]["availableModelSelectionOptions"]
+    except (KeyError, TypeError):
+        return []
+    if not isinstance(options, list):
+        return []
+    out: list[dict] = []
+    _flatten(options, out)
+    return out
