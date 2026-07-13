@@ -12,9 +12,10 @@ dependencies = [
     "cloakbrowser>=0.4.10",
     "flask>=3.0",
     "flask-cors>=6.0",
-    "toolz>=1.0",         # pure-Python functional helpers (pipe/curry/groupby/...)
     "psutil>=6.0",        # cross-platform process enumeration/termination
     "platformdirs>=4.0",  # cross-platform per-OS data dir (login profiles)
+    "pyyaml>=6.0",        # parse webllm-proxy.yaml
+    "pydantic>=2.0",      # validate/type the config schema
 ]
 
 [project.scripts]
@@ -22,11 +23,6 @@ webllm-proxy = "webllm_proxy.__main__:main"
 
 [project.urls]
 Documentation = "https://github.com/CloakHQ/CloakBrowser"
-
-[project.optional-dependencies]
-copilot = [
-    "websockets>=16.1",
-]
 
 [build-system]
 requires = ["hatchling"]
@@ -44,14 +40,21 @@ dev = [
     "ty>=0.0.1a1",
     "pytest>=8.0",
     "poethepoet>=0.31",
+    # validation-only clients for the smoke/compat suite (never in the runtime path)
+    "openai>=1.40",
+    "anthropic>=0.34",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+# docs/discovery holds reverse-engineering notes + throwaway sample projects
+# (intentionally buggy fixtures), not package code -- don't lint them.
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "PTH", "PL", "C90", "RUF"]
@@ -65,43 +68,34 @@ max-nested-blocks = 3
 max-args = 6
 
 [tool.ruff.lint.per-file-ignores]
-# Lazy imports here are intentional (CLI startup speed / provider isolation so
-# picking one backend never imports the other's env-reading config, and
-# breaking a real import cycle between a provider's __init__ and http/, which
-# needs both providers' config), not an oversight -- see each module's own
-# top docstring / inline comment.
+# Lazy imports keep provider isolation (selecting one backend never imports the
+# other's env-reading config) and CLI startup fast -- intentional, not a smell.
 "webllm_proxy/cli.py" = ["PLC0415"]
 "webllm_proxy/providers/__init__.py" = ["PLC0415"]
-"webllm_proxy/providers/chatgpt/__init__.py" = ["PLC0415"]
-"webllm_proxy/providers/databricks/__init__.py" = ["PLC0415"]
-# The two Flask route modules for the streaming + tool-calling + single-
-# browser-locking request path. Everything reasonably extractable already
-# moved out (wire/, application/, strategies/, providers/*/llmproxy.py); the
-# remaining branching is inherent to orchestrating one stateful streaming HTTP
-# response over a shared browser turn, not a decomposition opportunity --
-# splitting these further would trade a readable, linear request flow for
-# indirection between functions that all need the same handful of locals.
-"webllm_proxy/http/openai_routes.py" = ["C901", "PLR0911", "PLR0912", "PLR0915", "PLR2004"]
-"webllm_proxy/http/anthropic_routes.py" = ["C901", "PLR0915", "PLR2004"]
-# The aggregator gateway's Flask factory: many small route registrations push
-# mccabe over 8 (same shape as the route modules above), and a bare 200 status
-# check. Held to the same pragmatic bar.
-"webllm_proxy/gateway/app.py" = ["C901", "PLR2004"]
+# The single Flask route module: one stateful streaming HTTP response over a
+# shared browser turn is an inherently linear, branchy request flow -- splitting
+# it further would trade readability for indirection between functions that all
+# need the same handful of locals.
+"webllm_proxy/http/routes.py" = ["C901", "PLR0911", "PLR0912", "PLR0915", "PLR2004", "PLR0913"]
+# Provider request paths + the Anthropic-SSE decoder + the server boot loop:
+# same shape -- linear per-event/per-provider branching over a streaming turn.
+"webllm_proxy/providers/chatgpt/__init__.py" = ["C901", "PLR0912", "PLR0913"]
+"webllm_proxy/providers/databricks/__init__.py" = ["C901", "PLR0912", "PLR0913"]
+"webllm_proxy/providers/copilot/__init__.py" = ["C901", "PLR0912"]
+"webllm_proxy/utils/convert.py" = ["C901", "PLR0911"]
+"webllm_proxy/server.py" = ["C901", "PLR0912"]
+# research.py lazily imports its own package `__init__` (`_trigger`) to avoid a
+# real import cycle -- intentional, like the other lazy provider imports.
+"webllm_proxy/providers/chatgpt/research.py" = ["PLC0415"]
 # Magic-number / long-assert-line noise in test literals is normal, not a smell.
 "tests/*" = ["PLR2004", "E501"]
-# One-off reverse-engineering/dev scripts (not shipped, not imported by the
-# package) -- see docs/discovery/. Held to a looser bar than webllm_proxy/.
+# The live smoke suite imports the SDK lazily (so unit runs don't need it) and
+# reads a stream into a list -- both fine in an opt-in integration script.
+"tests/smoke_openai_sdk.py" = ["PLR2004", "E501", "PLC0415", "C416"]
+# One-off reverse-engineering/dev scripts (not shipped, not imported).
 "scripts/*" = [
     "C901", "PLR2004", "PLC0415", "E501", "SIM103", "RET504", "PTH123", "RUF059", "UP015", "E702",
-    "PLW2901",
-]
-# The copilot provider is a self-contained, detachable library (moved in from a
-# standalone package): intentional lazy imports (websockets/httpx), compact
-# protocol-codec branching, enum-keyed class-level maps, and grouped __all__.
-# Held to the same pragmatic bar as scripts/ and the route modules.
-"webllm_proxy/providers/copilot/**" = [
-    "E501", "E702", "PLC0415", "PLR2004", "C901", "PLR0911", "PLR0912",
-    "PLR0913", "PLR0915", "PLR1714", "PLW2901", "RUF012", "RUF022",
+    "PLW2901", "PLR0911", "PLR0912", "PLW1510", "RUF100", "PLR0915",
 ]
 
 [tool.poe.tasks]
@@ -110,9 +104,15 @@ lint = "ruff check ."
 typecheck = "ty check webllm_proxy"
 test = "pytest -q"
 check = ["fmt", "lint", "typecheck", "test"]
+live = "python scripts/e2e_live.py"
 build = "uv build"
 bundle = "python scripts/build_offline_bundle.py"
 bundle-linux = "python scripts/build_offline_bundle.py --target linux-x64"
 bundle-windows = "python scripts/build_offline_bundle.py --target windows-x64"
 publish = "uv publish"
 release = ["check", "build"]
+
+[tool.uv.workspace]
+members = [
+    "docs/discovery/project_test",
+]
