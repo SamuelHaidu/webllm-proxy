@@ -1,29 +1,62 @@
-"""Composition root: builds the Flask app, mounts the health check, hands
-control to the active provider to register its own routes, and -- when that
-provider exposes a research backend -- mounts the async research job API and
-starts its background scheduler."""
+"""Composition root: boot every enabled provider's browser session, then serve
+one Flask app (one host/port) over all of them."""
 
-from flask import Flask
-from flask_cors import CORS
+from __future__ import annotations
 
-from .application.research import ResearchScheduler
-from .http import health, research_routes
-from .research.jobstore.memory import MemoryJobStore
+import atexit
+import logging
+import sys
 
+from .http import build_app
+from .providers import build_enabled
+from .utils.config import Config
 
-def build_app(session, provider) -> Flask:
-    app = Flask(__name__)
-    CORS(app)
-    health.register(app, session, provider)
-    provider.register_routes(app, session)
-    _mount_research(app, session, provider)
-    return app
+log = logging.getLogger(__name__)
 
 
-def _mount_research(app, session, provider) -> None:
-    backend = provider.research_backend(session)
-    if backend is None:
-        return
-    store = MemoryJobStore()
-    ResearchScheduler(store, backend, session).start()
-    research_routes.register(app, store)
+def serve(config: Config) -> int:
+    names = config.enabled_providers()
+    if not names:
+        print("FATAL: no providers enabled in the config file", file=sys.stderr)
+        return 2
+
+    try:
+        providers = build_enabled(config)
+    except Exception as e:
+        print(f"FATAL: {e}", file=sys.stderr)
+        return 2
+
+    for name, p in providers.items():
+        print(f"[{name}] booting browser (headless={p.session.headless}) ...")
+        p.start()
+
+    ready_any = False
+    for name, p in providers.items():
+        if p.wait_ready(120):
+            ready_any = True
+            print(f"[{name}] ready")
+        else:
+            print(f"[{name}] WARNING: not ready ({p.error})", file=sys.stderr)
+
+    if not ready_any:
+        print("FATAL: no provider became ready", file=sys.stderr)
+        for p in providers.values():
+            p.close()
+        return 1
+
+    app = build_app(providers)
+    atexit.register(lambda: [p.close() for p in providers.values()])
+
+    host, port = config.server.host, config.server.port
+    print(f"[webllm-proxy] ready on http://{host}:{port}")
+    print("  GET  /v1/models             merged; ids namespaced <provider>__<slug>")
+    print("  POST /v1/chat/completions   routed by model prefix")
+    print("  GET  /health                aggregated readiness")
+    try:
+        app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for p in providers.values():
+            p.close()
+    return 0
