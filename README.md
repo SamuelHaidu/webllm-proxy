@@ -234,9 +234,13 @@ Three workflows under `.github/workflows/`:
   wheel, tags the commit `vX.Y.Z`, and creates the GitHub Release for that
   tag with the sdist/wheel attached. A merge that doesn't bump `__version__`
   is a no-op here — nothing releases until you do.
-- **`offline-bundle.yml`** — triggered by the `vX.Y.Z` tag `release.yml`
-  just pushed: builds the Linux + Windows offline bundles natively (one
-  runner per OS) and attaches them as zips to that same GitHub Release.
+- **`offline-bundle.yml`** — explicitly dispatched by `release.yml` for the
+  `vX.Y.Z` tag it just created (a tag pushed with the default `GITHUB_TOKEN`
+  doesn't auto-trigger other workflows' `push: tags:`, so `release.yml` calls
+  `gh workflow run offline-bundle.yml --ref vX.Y.Z` itself instead — its
+  `push: tags:` trigger still fires normally for a tag pushed some other
+  way). Builds the Linux + Windows offline bundles natively (one runner per
+  OS) and attaches them as zips to that same GitHub Release.
 
 To ship a release: bump `__version__` in `webllm_proxy/_version.py` in a PR,
 merge it, and the rest is automatic.

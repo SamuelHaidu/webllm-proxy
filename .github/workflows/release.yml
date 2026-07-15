@@ -10,15 +10,22 @@ name: Release
 #   2. builds the sdist + wheel
 #   3. tags the commit vX.Y.Z and pushes the tag
 #   4. creates the GitHub Release for that tag, with the sdist/wheel attached
+#   5. dispatches offline-bundle.yml for that tag (see note below on why)
 #
 # GitHub-only distribution for now -- no PyPI publish step (see
 # `uv run poe publish` for a manual one-off if/when that's wanted again; it
 # needs a PyPI Trusted Publisher registered for this repo first, see git
 # history of this file for how that was wired up).
 #
-# Pushing the vX.Y.Z tag in step 3 also triggers offline-bundle.yml, which
-# builds the Linux/Windows offline install zips and attaches them to this
-# same Release once they're ready.
+# Note: a tag pushed with the default GITHUB_TOKEN (as step 3 does) does
+# NOT trigger other workflows' `on: push: tags:` -- GitHub's anti-recursion
+# safeguard suppresses events from GITHUB_TOKEN-authored pushes (confirmed
+# by actually watching offline-bundle.yml not fire off the first tag push
+# here, not assumed from the docs alone). So step 5 explicitly dispatches
+# offline-bundle.yml via the API instead, which builds the Linux/Windows
+# offline install zips and attaches them to this same Release once ready.
+# (A tag pushed some other way, e.g. by a human with their own PAT, still
+# triggers offline-bundle.yml normally through its own `push: tags:`.)
 
 on:
   push:
@@ -69,6 +76,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write # push the vX.Y.Z tag + create the GitHub Release
+      actions: write # dispatch offline-bundle.yml (see note above)
     steps:
       - uses: actions/checkout@v7
 
@@ -101,3 +109,9 @@ jobs:
           files: |
             dist/*.whl
             dist/*.tar.gz
+
+      - name: Trigger the offline-bundle build for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.check-version.outputs.version }}
+        run: gh workflow run offline-bundle.yml --ref "$TAG"
