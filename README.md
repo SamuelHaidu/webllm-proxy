@@ -56,7 +56,7 @@ uv run webllm-proxy install # pre-download the stealth browser (~200MB; optional
 uv tool install webllm-proxy
 
 # As a standalone CLI tool, straight from this Git repo (no PyPI needed):
-uv tool install --from git+https://github.com/<owner>/webllm-proxy webllm-proxy
+uv tool install --from git+https://github.com/SamuelHaidu/webllm-proxy webllm-proxy
 
 # Fully offline (no PyPI, no browser download): download the zip for your OS
 # from this repo's GitHub Releases page and see "Corporate / air-gapped
