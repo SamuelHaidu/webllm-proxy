@@ -18,6 +18,11 @@ from .openai import message_text
 # reasoning-effort ladder rung -> Anthropic extended-thinking budget (tokens).
 _EFFORT_BUDGET = {"min": 2048, "standard": 8192, "extended": 16384, "max": 32768}
 
+# Anthropic's hard minimum thinking budget, and the head-room kept for the reply
+# text above the budget when a client's `max_tokens` is too small to fit both.
+_MIN_THINKING_BUDGET = 1024
+_THINKING_REPLY_MARGIN = 512
+
 # Anthropic stop_reason -> OpenAI finish_reason.
 _STOP_MAP = {
     "end_turn": "stop",
@@ -89,8 +94,87 @@ def openai_messages_to_anthropic(messages) -> tuple[list, list]:
     return system, out
 
 
-def openai_to_anthropic(req: dict, *, default_max_tokens: int, effort: str | None = None) -> dict:
+def _stop_sequences(stop) -> list[str]:
+    """OpenAI `stop` (str | list[str] | None) -> Anthropic `stop_sequences`."""
+    if isinstance(stop, str):
+        return [stop]
+    if isinstance(stop, list):
+        return [s for s in stop if isinstance(s, str)]
+    return []
+
+
+def _resolve_tool_choice(req: dict, *, thinking_on: bool) -> dict | None:
+    """OpenAI `tool_choice`/`parallel_tool_calls` -> Anthropic `tool_choice`.
+
+    Forced tool use (`required` or a named function) is INCOMPATIBLE with
+    extended thinking -- Anthropic allows only `auto`/`none` then -- so it's
+    downgraded to `auto` whenever `thinking_on`. `parallel_tool_calls: false`
+    maps to `disable_parallel_tool_use` (valid on every choice except `none`)."""
+    tc = req.get("tool_choice")
+    choice: dict | None = None
+    if isinstance(tc, dict) and (tc.get("function") or {}).get("name"):
+        if thinking_on:
+            choice = {"type": "auto"}
+        else:
+            choice = {"type": "tool", "name": tc["function"]["name"]}
+    elif tc == "required":
+        choice = {"type": "auto"} if thinking_on else {"type": "any"}
+    elif tc == "none":
+        choice = {"type": "none"}
+    elif tc == "auto":
+        choice = {"type": "auto"}
+    if req.get("parallel_tool_calls") is False:
+        if choice is None:
+            choice = {"type": "auto"}
+        if choice["type"] != "none":
+            choice["disable_parallel_tool_use"] = True
+    return choice
+
+
+def _apply_sampling(body: dict, req: dict, *, thinking_on: bool) -> None:
+    """Forward `temperature`/`top_p` -- but only when thinking is OFF: Anthropic
+    rejects a non-1 `temperature` and any `top_p`/`top_k` override while extended
+    thinking is enabled (a 400 on the databricks channel)."""
+    if thinking_on:
+        return
+    if req.get("temperature") is not None:
+        body["temperature"] = req["temperature"]
+    if req.get("top_p") is not None:
+        body["top_p"] = req["top_p"]
+
+
+def _apply_thinking(body: dict, effort: str | None, model: str | None) -> bool:
+    """Set `body["thinking"]` from the effort rung; return whether thinking was
+    enabled. Manual mode (`{type: enabled, budget_tokens}`) is used for models
+    that require it -- e.g. Claude Sonnet 4.5, the only model enabled on the
+    databricks channel -- honoring Anthropic's 1024-token floor and the
+    `max_tokens > budget_tokens` rule (raising `max_tokens` only if a too-small
+    client cap can't otherwise fit the minimum budget)."""
+    if not effort or effort not in _EFFORT_BUDGET:
+        return False
+    budget = _EFFORT_BUDGET[effort]
+    if budget >= body["max_tokens"]:
+        budget = body["max_tokens"] - _THINKING_REPLY_MARGIN
+    if budget < _MIN_THINKING_BUDGET:
+        budget = _MIN_THINKING_BUDGET
+        body["max_tokens"] = max(body["max_tokens"], budget + _THINKING_REPLY_MARGIN)
+    body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    return True
+
+
+def openai_to_anthropic(
+    req: dict, *, default_max_tokens: int, effort: str | None = None, model: str | None = None
+) -> dict:
     """Build an Anthropic Messages request body from an OpenAI request.
+
+    Forwards every OpenAI field with an Anthropic equivalent: `messages`,
+    `max_tokens`/`max_completion_tokens`, `tools`, `tool_choice`/
+    `parallel_tool_calls`, `temperature`/`top_p` (thinking permitting), `stop`
+    -> `stop_sequences`, `user` -> `metadata.user_id`, and `reasoning_effort`
+    (via `effort`) -> `thinking`. Fields with no Anthropic equivalent (`n`,
+    `presence_penalty`, `frequency_penalty`, `logit_bias`, `logprobs`, `seed`,
+    `response_format`, `stream_options`) are intentionally dropped. `model`
+    (the bare slug) selects the thinking mode -- see `_apply_thinking`.
 
     `stream` is always `True` upstream regardless of the OpenAI client's own
     `stream` field: our capture layer (`AnthropicSSE`) only understands
@@ -102,27 +186,23 @@ def openai_to_anthropic(req: dict, *, default_max_tokens: int, effort: str | Non
     vs `_nonstream_claude` collapsing the SSE), exactly like the Azure/GPT
     channel already does (`build_azure_body` hardcodes `stream: True` too)."""
     system, messages = openai_messages_to_anthropic(req.get("messages") or [])
-    body: dict = {
-        "messages": messages,
-        "max_tokens": req.get("max_tokens") or default_max_tokens,
-        "stream": True,
-    }
+    max_tokens = req.get("max_tokens") or req.get("max_completion_tokens") or default_max_tokens
+    body: dict = {"messages": messages, "max_tokens": max_tokens, "stream": True}
     if system:
         body["system"] = system
     tools = openai_tools_to_anthropic(req.get("tools"))
     if tools:
         body["tools"] = tools
-    tc = req.get("tool_choice")
-    if isinstance(tc, dict) and (tc.get("function") or {}).get("name"):
-        body["tool_choice"] = {"type": "tool", "name": tc["function"]["name"]}
-    elif tc == "required":
-        body["tool_choice"] = {"type": "any"}
-    if effort and effort in _EFFORT_BUDGET:
-        budget = min(_EFFORT_BUDGET[effort], body["max_tokens"] - 1)
-        if budget > 0:
-            body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-    if req.get("temperature") is not None:
-        body["temperature"] = req["temperature"]
+    thinking_on = _apply_thinking(body, effort, model)
+    choice = _resolve_tool_choice(req, thinking_on=thinking_on)
+    if choice is not None:
+        body["tool_choice"] = choice
+    _apply_sampling(body, req, thinking_on=thinking_on)
+    stops = _stop_sequences(req.get("stop"))
+    if stops:
+        body["stop_sequences"] = stops
+    if req.get("user"):
+        body["metadata"] = {"user_id": req["user"]}
     return body
 
 
@@ -146,6 +226,12 @@ class AnthropicSSE:
         # docs/discovery/2026-07-10-databricks-llmproxy.md). Empty if upstream
         # never sent one; read after the turn completes (`openai_usage()`).
         self.usage: dict = {}
+        # Per-thinking-block `signature` (the encrypted full reasoning Anthropic
+        # streams via `signature_delta`), keyed by content-block index. Captured
+        # so it isn't silently dropped; NOT re-emitted, because the OpenAI Chat
+        # Completions wire has no field to carry an opaque signature back on the
+        # next tool turn (see the 2026-07-15 discovery note).
+        self.signatures: dict[int, str] = {}
 
     def feed(self, chunk: str):
         events = []
@@ -232,6 +318,11 @@ class AnthropicSSE:
             return [("content", delta.get("text", ""))]
         if dt == "thinking_delta":
             return [("reasoning", delta.get("thinking", ""))]
+        if dt == "signature_delta":
+            sig = delta.get("signature")
+            if sig:
+                self.signatures[idx] = self.signatures.get(idx, "") + sig
+            return []
         if dt == "input_json_delta":
             return [("tool_args", {"index": idx, "partial_json": delta.get("partial_json", "")})]
         return []

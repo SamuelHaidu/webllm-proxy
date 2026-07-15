@@ -59,6 +59,32 @@ def test_llmproxy_envelope_drops_caller_system_when_configured():
     assert "ignore me" not in body["system"][0]["text"]
 
 
+def test_llmproxy_envelope_adds_interleaved_beta_with_manual_thinking():
+    body = llmproxy.build_llmproxy_envelope(
+        {"messages": [], "thinking": {"type": "enabled", "budget_tokens": 2048}},
+        "claude-4-5-sonnet",
+        style_rules=False,
+        system_prompt=None,
+    )
+    assert body["anthropic_beta"] == [llmproxy.INTERLEAVED_THINKING_BETA]
+
+
+def test_llmproxy_envelope_no_beta_without_manual_thinking():
+    # no thinking at all -> no beta
+    body = llmproxy.build_llmproxy_envelope(
+        {"messages": []}, "claude-4-5-sonnet", style_rules=False, system_prompt=None
+    )
+    assert "anthropic_beta" not in body
+    # adaptive thinking auto-enables interleaved thinking -> the beta must NOT be sent
+    body2 = llmproxy.build_llmproxy_envelope(
+        {"messages": [], "thinking": {"type": "adaptive"}},
+        "claude-sonnet-5",
+        style_rules=False,
+        system_prompt=None,
+    )
+    assert "anthropic_beta" not in body2
+
+
 def test_azure_body():
     body = llmproxy.build_azure_body(
         {"messages": [{"role": "user", "content": "x"}]}, "gpt-41-2025-04-14"

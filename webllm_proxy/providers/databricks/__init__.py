@@ -210,7 +210,7 @@ class DatabricksProvider(BrowserBackedProvider):
         effort = wire.normalize_effort(request)
         request = self._apply_user_suffix(request, model)
         anthropic_body = convert.openai_to_anthropic(
-            request, default_max_tokens=llmproxy.CLAUDE_MAX_TOKENS, effort=effort
+            request, default_max_tokens=llmproxy.CLAUDE_MAX_TOKENS, effort=effort, model=model
         )
         body = llmproxy.build_llmproxy_envelope(
             anthropic_body,

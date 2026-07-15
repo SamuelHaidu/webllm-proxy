@@ -83,6 +83,120 @@ def test_effort_adds_thinking_budget():
     assert body["thinking"]["budget_tokens"] == 32768
 
 
+def test_thinking_budget_respects_floor_and_raises_max_tokens():
+    # tiny max_tokens + high effort: the budget can neither be the full 32768
+    # nor drop below Anthropic's 1024 floor, so max_tokens is raised to keep
+    # max_tokens > budget_tokens valid.
+    body = convert.openai_to_anthropic(
+        {"messages": [{"role": "user", "content": "x"}], "max_tokens": 1000},
+        default_max_tokens=64000,
+        effort="max",
+    )
+    assert body["thinking"]["budget_tokens"] == 1024
+    assert body["max_tokens"] > body["thinking"]["budget_tokens"]
+
+
+def test_thinking_budget_shrinks_under_small_max_tokens_without_raising_it():
+    body = convert.openai_to_anthropic(
+        {"messages": [{"role": "user", "content": "x"}], "max_tokens": 4096},
+        default_max_tokens=64000,
+        effort="max",
+    )
+    # 32768 wouldn't fit under max_tokens=4096, so the budget shrinks to leave
+    # the reply margin, but the client's max_tokens is left as-is.
+    assert body["thinking"]["budget_tokens"] == 4096 - 512
+    assert body["max_tokens"] == 4096
+
+
+def test_temperature_and_top_p_dropped_when_thinking_enabled():
+    body = convert.openai_to_anthropic(
+        {"messages": [{"role": "user", "content": "x"}], "temperature": 0.2, "top_p": 0.9},
+        default_max_tokens=64000,
+        effort="max",
+    )
+    assert "temperature" not in body
+    assert "top_p" not in body
+    assert body["thinking"]["type"] == "enabled"
+
+
+def test_temperature_and_top_p_forwarded_without_thinking():
+    body = convert.openai_to_anthropic(
+        {"messages": [{"role": "user", "content": "x"}], "temperature": 0.2, "top_p": 0.9},
+        default_max_tokens=64000,
+    )
+    assert body["temperature"] == 0.2
+    assert body["top_p"] == 0.9
+    assert "thinking" not in body
+
+
+def test_tool_choice_forced_without_thinking():
+    req = {"messages": [], "tool_choice": "required"}
+    assert convert.openai_to_anthropic(req, default_max_tokens=8000)["tool_choice"] == {
+        "type": "any"
+    }
+    req2 = {"messages": [], "tool_choice": {"type": "function", "function": {"name": "f"}}}
+    assert convert.openai_to_anthropic(req2, default_max_tokens=8000)["tool_choice"] == {
+        "type": "tool",
+        "name": "f",
+    }
+
+
+def test_tool_choice_not_forced_when_thinking_enabled():
+    # forced tool use is incompatible with extended thinking -> downgraded to auto
+    for tc in ("required", {"type": "function", "function": {"name": "f"}}):
+        body = convert.openai_to_anthropic(
+            {"messages": [], "tool_choice": tc}, default_max_tokens=64000, effort="max"
+        )
+        assert body["tool_choice"] == {"type": "auto"}
+
+
+def test_tool_choice_none_and_auto_passthrough():
+    assert convert.openai_to_anthropic(
+        {"messages": [], "tool_choice": "none"}, default_max_tokens=8000
+    )["tool_choice"] == {"type": "none"}
+    assert convert.openai_to_anthropic(
+        {"messages": [], "tool_choice": "auto"}, default_max_tokens=8000
+    )["tool_choice"] == {"type": "auto"}
+
+
+def test_parallel_tool_calls_false_disables_parallel():
+    body = convert.openai_to_anthropic(
+        {"messages": [], "parallel_tool_calls": False}, default_max_tokens=8000
+    )
+    assert body["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
+    body2 = convert.openai_to_anthropic(
+        {"messages": [], "tool_choice": "required", "parallel_tool_calls": False},
+        default_max_tokens=8000,
+    )
+    assert body2["tool_choice"] == {"type": "any", "disable_parallel_tool_use": True}
+
+
+def test_stop_maps_to_stop_sequences():
+    assert convert.openai_to_anthropic({"messages": [], "stop": "STOP"}, default_max_tokens=8000)[
+        "stop_sequences"
+    ] == ["STOP"]
+    assert convert.openai_to_anthropic(
+        {"messages": [], "stop": ["a", "b"]}, default_max_tokens=8000
+    )["stop_sequences"] == ["a", "b"]
+
+
+def test_max_completion_tokens_fallback():
+    body = convert.openai_to_anthropic(
+        {"messages": [], "max_completion_tokens": 1234}, default_max_tokens=8000
+    )
+    assert body["max_tokens"] == 1234
+    # max_tokens wins when both are present
+    body2 = convert.openai_to_anthropic(
+        {"messages": [], "max_tokens": 10, "max_completion_tokens": 1234}, default_max_tokens=8000
+    )
+    assert body2["max_tokens"] == 10
+
+
+def test_user_maps_to_metadata_user_id():
+    body = convert.openai_to_anthropic({"messages": [], "user": "u-42"}, default_max_tokens=8000)
+    assert body["metadata"] == {"user_id": "u-42"}
+
+
 def test_anthropic_sse_decode():
     sse = "".join(
         f"event: {t}\ndata: {json.dumps(d)}\n\n"
@@ -181,6 +295,35 @@ def test_anthropic_usage_to_openai_empty_and_partial():
         "completion_tokens": 0,
         "total_tokens": 10,
     }
+
+
+def test_anthropic_sse_captures_signature():
+    sse = "".join(
+        f"data: {json.dumps(d)}\n\n"
+        for d in [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}},
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "hmm"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "signature_delta", "signature": "sig-"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "signature_delta", "signature": "abc"},
+            },
+            {"type": "message_stop"},
+        ]
+    )
+    p = convert.AnthropicSSE()
+    events = list(p.feed(sse)) + list(p.flush())
+    assert ("reasoning", "hmm") in events
+    assert p.signatures == {0: "sig-abc"}
 
 
 def test_anthropic_sse_tool_use():
