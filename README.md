@@ -52,21 +52,22 @@ fits:
 uv sync                     # create .venv, install deps + this package
 uv run webllm-proxy install # pre-download the stealth browser (~200MB; optional)
 
-# As a standalone CLI tool, from PyPI (once published):
-uv tool install webllm-proxy
-
-# As a standalone CLI tool, straight from this Git repo (no PyPI needed):
+# As a standalone CLI tool, straight from GitHub (not on PyPI -- see below):
 uv tool install --from git+https://github.com/SamuelHaidu/webllm-proxy webllm-proxy
+# Pin to a specific release instead of tracking main's latest commit:
+uv tool install --from git+https://github.com/SamuelHaidu/webllm-proxy@v0.2.0 webllm-proxy
 
-# Fully offline (no PyPI, no browser download): download the zip for your OS
+# Fully offline (no browser download either): download the zip for your OS
 # from this repo's GitHub Releases page and see "Corporate / air-gapped
 # install" below.
 ```
 
-`uv tool install` puts a `webllm-proxy` executable on your `PATH` (run `uv
-tool update-shell` once if it isn't already); `webllm-proxy install` still
-needs to be run afterward to fetch the browser binary unless you used the
-offline zip.
+Not published to PyPI right now (GitHub is the only distribution channel for
+the moment) -- `uv tool install webllm-proxy` won't work; use the `git+`
+form above instead. `uv tool install` puts a `webllm-proxy` executable on
+your `PATH` (run `uv tool update-shell` once if it isn't already);
+`webllm-proxy install` still needs to be run afterward to fetch the browser
+binary unless you used the offline zip.
 
 ## Configure
 
@@ -214,7 +215,7 @@ docs/discovery/         how each web backend was reverse-engineered
 ```bash
 uv run poe check      # fmt + lint (ruff, strict) + typecheck (ty) + test (pytest)
 uv run poe release    # check + build (uv build)
-uv run poe publish    # uv publish -- manual fallback; CI does this on every version bump (see below)
+uv run poe publish    # uv publish -- manual only for now, see below
 ```
 
 The `openai` / `anthropic` SDKs are dev-only, used purely as validation clients
@@ -230,10 +231,9 @@ Three workflows under `.github/workflows/`:
 - **`release.yml`** — every push to `main` (i.e. every merge) re-runs the
   quality gate, then checks whether `webllm_proxy/_version.py`'s
   `__version__` is already tagged. If it's a new version: builds the sdist +
-  wheel, `uv publish`es to PyPI (authenticated via PyPI **Trusted
-  Publishing**/OIDC — no stored token), tags the commit `vX.Y.Z`, and creates
-  the GitHub Release for that tag. A merge that doesn't bump `__version__` is
-  a no-op here — nothing publishes until you do.
+  wheel, tags the commit `vX.Y.Z`, and creates the GitHub Release for that
+  tag with the sdist/wheel attached. A merge that doesn't bump `__version__`
+  is a no-op here — nothing releases until you do.
 - **`offline-bundle.yml`** — triggered by the `vX.Y.Z` tag `release.yml`
   just pushed: builds the Linux + Windows offline bundles natively (one
   runner per OS) and attaches them as zips to that same GitHub Release.
@@ -241,16 +241,20 @@ Three workflows under `.github/workflows/`:
 To ship a release: bump `__version__` in `webllm_proxy/_version.py` in a PR,
 merge it, and the rest is automatic.
 
-One-time setup (can't be done from code): register this repo as a [Trusted
-Publisher](https://docs.pypi.org/trusted-publishers/) for the `webllm-proxy`
-project on PyPI, pointing at `release.yml` and the `pypi` environment it
-runs under (Settings → Environments in this repo).
+**Not published to PyPI right now** — GitHub (git installs + Release
+zips/wheels) is the only distribution channel for the moment; `uv run poe
+publish` remains available for a manual one-off if/when PyPI comes back,
+but nothing in CI runs it. That needs a PyPI account with a
+[Trusted Publisher](https://docs.pypi.org/trusted-publishers/) registered
+for this repo (project `webllm-proxy`, workflow `release.yml`, environment
+`pypi` — that environment already exists in this repo's Settings →
+Environments from when this was wired up) plus re-adding the `uv publish`
+step (and its `id-token: write` permission) to `release.yml`.
 
 ## Corporate / air-gapped install
 
-CloakBrowser's binary download (~200MB) is the one thing needing internet beyond
-PyPI, and the one most likely blocked by a TLS-inspecting corporate proxy or an
-air-gapped policy.
+CloakBrowser's binary download (~200MB) is the thing most likely blocked by a
+TLS-inspecting corporate proxy or an air-gapped policy.
 
 **Simplest**: every GitHub Release ships a pre-built, fully offline zip for
 Linux and Windows (`webllm-proxy-offline-linux-x64.zip` /

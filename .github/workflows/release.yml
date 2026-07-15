@@ -1,30 +1,24 @@
 name: Release
 
 # Runs on every push to main (i.e. every merged PR, since ci.yml already
-# gated the PR itself). Publishing only actually happens when
+# gated the PR itself). This only actually does anything when
 # webllm_proxy/_version.py's __version__ is one that hasn't been tagged yet
 # -- merges that don't bump it are a no-op here. To ship a release: bump
 # __version__ in a PR, merge it, done. This job then:
 #   1. re-runs the quality gate (belt-and-braces: covers a direct push to
 #      main that skipped ci.yml, e.g. an admin merge without a PR)
-#   2. builds the sdist + wheel and publishes them to PyPI via `uv publish`,
-#      authenticated with PyPI Trusted Publishing (OIDC, no stored secret --
-#      see id-token permission below)
+#   2. builds the sdist + wheel
 #   3. tags the commit vX.Y.Z and pushes the tag
 #   4. creates the GitHub Release for that tag, with the sdist/wheel attached
+#
+# GitHub-only distribution for now -- no PyPI publish step (see
+# `uv run poe publish` for a manual one-off if/when that's wanted again; it
+# needs a PyPI Trusted Publisher registered for this repo first, see git
+# history of this file for how that was wired up).
 #
 # Pushing the vX.Y.Z tag in step 3 also triggers offline-bundle.yml, which
 # builds the Linux/Windows offline install zips and attaches them to this
 # same Release once they're ready.
-#
-# One-time setup this workflow depends on (can't be done from code):
-#   - Register this repo as a Trusted Publisher for the `webllm-proxy`
-#     project on PyPI (PyPI project -> Publishing -> Add a new publisher),
-#     pointing at this workflow file (release.yml) and the `pypi`
-#     environment used below.
-#   - A `pypi` environment in this repo's Settings -> Environments (optional
-#     protection rules, e.g. required reviewers, are up to you -- Trusted
-#     Publishing works either way as long as the environment name matches).
 
 on:
   push:
@@ -67,16 +61,14 @@ jobs:
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           fi
 
-  publish:
-    name: Build, publish to PyPI, tag, release
+  release:
+    name: Build, tag, release
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: pypi
     permissions:
       contents: write # push the vX.Y.Z tag + create the GitHub Release
-      id-token: write # PyPI Trusted Publishing (OIDC) -- no API token needed
     steps:
       - uses: actions/checkout@v7
 
@@ -93,9 +85,6 @@ jobs:
 
       - name: Build sdist + wheel
         run: uv build
-
-      - name: Publish to PyPI
-        run: uv publish
 
       - name: Tag the release commit
         env:

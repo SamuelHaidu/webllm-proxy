@@ -2,8 +2,9 @@ name: CI
 
 # Quality gate for pull requests targeting main: fmt + lint + typecheck +
 # unit tests (uv run poe check). This must pass before a PR can merge;
-# release.yml re-runs it once more on main itself before publishing, so a
-# direct push to main (bypassing a PR) still can't reach PyPI unchecked.
+# release.yml re-runs it once more on main itself before releasing, so a
+# direct push to main (bypassing a PR) still can't reach a GitHub Release
+# unchecked.
 
 on:
   pull_request:
