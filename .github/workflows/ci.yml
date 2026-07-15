@@ -1,0 +1,30 @@
+name: CI
+
+# Quality gate for pull requests targeting main: fmt + lint + typecheck +
+# unit tests (uv run poe check). This must pass before a PR can merge;
+# release.yml re-runs it once more on main itself before publishing, so a
+# direct push to main (bypassing a PR) still can't reach PyPI unchecked.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  quality:
+    name: fmt + lint + typecheck + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      - name: Install project + dev dependencies
+        run: uv sync --locked
+
+      - name: Quality gate (fmt/lint/typecheck/test)
+        run: uv run poe check

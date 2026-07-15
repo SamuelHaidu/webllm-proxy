@@ -12,6 +12,11 @@ name: Offline bundle
 #
 # For an ad-hoc wheels-only cross-build from a single machine (no browser
 # binary), see `uv run poe bundle-linux` / `bundle-windows` instead.
+#
+# Triggered by release.yml pushing a vX.Y.Z tag: each OS zips its bundle and
+# attaches it to that tag's GitHub Release (already created by release.yml,
+# so this only adds assets to it). A manual workflow_dispatch run (no tag)
+# just uploads the zip as a workflow artifact instead, for testing.
 
 on:
   workflow_dispatch: {}
@@ -31,6 +36,8 @@ jobs:
             target: windows-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    permissions:
+      contents: write # only used to attach the zip to the Release on a tag push
     steps:
       - uses: actions/checkout@v7
 
@@ -51,9 +58,28 @@ jobs:
       - name: Build the offline bundle (native -- includes the browser binary)
         run: uv run poe bundle
 
+      - name: Zip the bundle (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd dist/offline
+          zip -r "../../webllm-proxy-offline-${{ matrix.target }}.zip" .
+
+      - name: Zip the bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/offline/* -DestinationPath "webllm-proxy-offline-${{ matrix.target }}.zip"
+
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v7
         with:
           name: offline-bundle-${{ matrix.target }}
-          path: dist/offline/**
+          path: webllm-proxy-offline-${{ matrix.target }}.zip
           if-no-files-found: error
+
+      - name: Attach zip to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: webllm-proxy-offline-${{ matrix.target }}.zip

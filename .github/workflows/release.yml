@@ -1,0 +1,114 @@
+name: Release
+
+# Runs on every push to main (i.e. every merged PR, since ci.yml already
+# gated the PR itself). Publishing only actually happens when
+# webllm_proxy/_version.py's __version__ is one that hasn't been tagged yet
+# -- merges that don't bump it are a no-op here. To ship a release: bump
+# __version__ in a PR, merge it, done. This job then:
+#   1. re-runs the quality gate (belt-and-braces: covers a direct push to
+#      main that skipped ci.yml, e.g. an admin merge without a PR)
+#   2. builds the sdist + wheel and publishes them to PyPI via `uv publish`,
+#      authenticated with PyPI Trusted Publishing (OIDC, no stored secret --
+#      see id-token permission below)
+#   3. tags the commit vX.Y.Z and pushes the tag
+#   4. creates the GitHub Release for that tag, with the sdist/wheel attached
+#
+# Pushing the vX.Y.Z tag in step 3 also triggers offline-bundle.yml, which
+# builds the Linux/Windows offline install zips and attaches them to this
+# same Release once they're ready.
+#
+# One-time setup this workflow depends on (can't be done from code):
+#   - Register this repo as a Trusted Publisher for the `webllm-proxy`
+#     project on PyPI (PyPI project -> Publishing -> Add a new publisher),
+#     pointing at this workflow file (release.yml) and the `pypi`
+#     environment used below.
+#   - A `pypi` environment in this repo's Settings -> Environments (optional
+#     protection rules, e.g. required reviewers, are up to you -- Trusted
+#     Publishing works either way as long as the environment name matches).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  check-version:
+    name: Check whether __version__ needs releasing
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      - name: Install project dependencies
+        run: uv sync --locked
+
+      - name: Read __version__
+        id: version
+        run: |
+          v=$(uv run python -c "from webllm_proxy._version import __version__; print(__version__)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Check if v${{ steps.version.outputs.version }} is already tagged
+        id: check
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "already released: $tag"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new version, releasing: $tag"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    name: Build, publish to PyPI, tag, release
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi
+    permissions:
+      contents: write # push the vX.Y.Z tag + create the GitHub Release
+      id-token: write # PyPI Trusted Publishing (OIDC) -- no API token needed
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      - name: Install project + dev dependencies
+        run: uv sync --locked
+
+      - name: Quality gate (fmt/lint/typecheck/test)
+        run: uv run poe check
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish
+
+      - name: Tag the release commit
+        env:
+          TAG: v${{ needs.check-version.outputs.version }}
+        run: |
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
