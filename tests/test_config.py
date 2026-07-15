@@ -1,5 +1,7 @@
 """utils.config: YAML + pydantic parsing."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -38,8 +40,12 @@ def test_defaults_when_empty(tmp_path):
 
 
 def test_profile_dir_override(tmp_path):
+    # Compare Path == Path (both go through the same OS-native separator
+    # normalization), not Path == a hardcoded POSIX-style string -- the
+    # latter fails on Windows, where Path("/tmp/x") stringifies with
+    # backslashes.
     cfg = Config.model_validate({"providers": {"chatgpt": {"profile_dir": "/tmp/x"}}})
-    assert str(cfg.profile_dir("chatgpt")) == "/tmp/x"
+    assert cfg.profile_dir("chatgpt") == Path("/tmp/x")
 
 
 def test_tokenizer_defaults_to_openai_for_every_provider():
