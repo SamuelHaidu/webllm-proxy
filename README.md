@@ -53,7 +53,15 @@ uv run webllm-proxy install # pre-download the stealth browser (~200MB; optional
 
 ## Configure
 
-Copy/edit `webllm-proxy.yaml` at the repo root:
+`webllm-proxy.yaml` is gitignored (it can hold a personal `workspace_url`), so
+copy the template first:
+
+```bash
+cp webllm-proxy.example.yaml webllm-proxy.yaml
+```
+
+Then set `enabled: true` on whichever provider(s) you actually have a web
+login for and fill in any required fields:
 
 ```yaml
 server:
@@ -65,18 +73,24 @@ providers:
     headless: true
   databricks:
     enabled: false
-    workspace_url: "https://dbc-xxxx.cloud.databricks.com/?o=1234567890"
-    models: [claude-4-5-sonnet]
-    openai_models: [gpt-41-2025-04-14, gpt-41-mini-2025-04-14]
+    workspace_url: "https://<your-workspace>.cloud.databricks.com/?o=<org-id>"
   copilot:
     enabled: false
     edition: m365
 ```
 
+Models are **not** listed in the config — each provider discovers its
+available models live from the upstream web app on every `GET /v1/models`
+call. `workspace_url` is the only field `databricks` requires; everything
+else (`tokenizer`, `models.<slug>.tokenizer`, `system_prompt`, `user_suffix`,
+`profile_dir`, `style_rules`, ...) is optional tuning — see the fully
+commented `webllm-proxy.example.yaml` and
+[Configuration reference](#configuration-reference) below.
+
 ## Run
 
-Log in once per enabled provider (headed, needs a display), then serve them all
-on one port:
+Log in once per enabled provider (headed, needs a display — this ignores the
+config's `headless` setting), then serve them all on one port:
 
 ```bash
 uv run webllm-proxy login --provider chatgpt          # once, headed
@@ -84,6 +98,7 @@ uv run webllm-proxy serve --config-file ./webllm-proxy.yaml
 ```
 
 ```bash
+curl -s http://127.0.0.1:5100/health        # {"status": "running", "providers": {...}}
 curl -s http://127.0.0.1:5100/v1/models
 curl -N http://127.0.0.1:5100/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"chatgpt__gpt-5-mini","stream":true,
@@ -93,19 +108,46 @@ curl -N http://127.0.0.1:5100/v1/chat/completions -H 'Content-Type: application/
 Research is a model, not a separate API: send `model: "chatgpt__research"` for a
 long, web-search-backed, structured-markdown answer.
 
+Running `webllm-proxy` with no subcommand is shorthand for `serve
+--config-file ./webllm-proxy.yaml`. `webllm-proxy --version` and
+`webllm-proxy <cmd> --help` also work.
+
 ## Use with the OpenAI SDK / `pi`
 
 Any OpenAI-compatible client points at `http://127.0.0.1:5100/v1` with a
 namespaced model id. `pi` consumes the OpenAI format natively — add one provider
 in `~/.pi/agent/models.json` pointing at the unified endpoint and list the
-`<provider>__<slug>` ids you want.
+`<provider>__<slug>` ids you want. (There used to be a dedicated
+`@webllm-proxy/pi` extension package with extra tooling on top of plain model
+access; it was retired when the server moved from a multi-port/gateway layout
+to this single-process one — see `docs/pi/webllm-integration.md` for what it
+did and how to rebuild it against the current server.)
 
 ## Configuration reference
 
 The YAML config is the source of truth (parsed with pyyaml, validated with
-pydantic — see `webllm_proxy/utils/config.py`). A few debug env vars remain:
-`WEBLLM_PROXY_DUMP_SSE` (dump raw captured SSE to a file),
-`WEBLLM_PROXY_DUMP_DIR` (where redacted `*_last_request.json` dumps land).
+pydantic — see `webllm_proxy/utils/config.py`). Fields per provider, all
+optional except where noted:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | must be `true` for the provider to boot at `serve`/`login` |
+| `headless` | `true` | used by `serve`; `login` always runs headed regardless |
+| `profile_dir` | per-OS data dir | override where the persistent browser profile lives |
+| `tokenizer` | `openai/gpt-5` | BPE profile used to *estimate* `usage` (see below) |
+| `models.<slug>.tokenizer` | — | per-model tokenizer override, e.g. for a mini/nano tier |
+| `system_prompt` | none | name of a `prompts/system_prompts/<name>.md` file to send |
+| `models.<slug>.system_prompt` | — | per-model override of `system_prompt` |
+| `user_suffix` | none | literal text appended to every turn's user message |
+| `models.<slug>.user_suffix` | — | per-model override of `user_suffix` |
+| `databricks.workspace_url` | `""` (**required** when enabled) | workspace URL incl. `?o=<org-id>` |
+| `databricks.style_rules` | `true` | inject the style-rules addendum into Genie/Claude turns |
+| `copilot.edition` | `m365` | Copilot edition to drive |
+| `copilot.url` | provider default | override the nav URL for a non-default tenant |
+
+A few debug env vars remain: `WEBLLM_PROXY_DUMP_SSE=<path>` (dump raw captured
+SSE to a file), `WEBLLM_PROXY_DUMP_DIR=<dir>` (where redacted
+`*_last_request.json` dumps land, defaults to the OS temp dir).
 
 ## Design & known limitations
 
@@ -116,8 +158,13 @@ pydantic — see `webllm_proxy/utils/config.py`). A few debug env vars remain:
   reliability is model-dependent. **databricks** Claude is native; there are no
   native-channel interception tricks anymore (chatgpt's internal tool messages
   are ignored).
-- **Serialized**: one turn at a time per provider (single browser each).
-- `usage` is currently zero everywhere (token counting deferred).
+- **Serialized**: one turn at a time per provider (single browser each) — a
+  second concurrent request to the same provider waits on the first.
+- **`usage` is estimated, not measured, for chatgpt/copilot**: none of the
+  three web apps expose a real token-count API, so `prompt_tokens`/
+  `completion_tokens` are computed locally with a vendored BPE tokenizer
+  (`tiktoken`, plus a vendored Claude vocab) per the `tokenizer` config above.
+  **databricks** usage is real, reported by the upstream channel itself.
 - Automates a web app you're logged into — likely against ToS beyond personal use.
 
 ## Architecture map
@@ -160,22 +207,29 @@ effort, roles, and streaming — never in the runtime path.
 
 CloakBrowser's binary download (~200MB) is the one thing needing internet beyond
 PyPI, and the one most likely blocked by a TLS-inspecting corporate proxy or an
-air-gapped policy. Three options:
+air-gapped policy. Any one of:
 
-1. **Internal mirror** — point `CLOAKBROWSER_DOWNLOAD_URL` at a mirror; also set
+1. **Pre-staged binary** — set `CLOAKBROWSER_BINARY_PATH`; `webllm-proxy install`
+   then skips the download.
+2. **Internal mirror** — point `CLOAKBROWSER_DOWNLOAD_URL` at a mirror; also set
    `HTTPS_PROXY`/`HTTP_PROXY` and `REQUESTS_CA_BUNDLE`/`SSL_CERT_FILE` (your root
    CA) if the gateway does TLS inspection.
-2. **Pre-staged binary** — set `CLOAKBROWSER_BINARY_PATH`; `webllm-proxy install`
-   then skips the download.
 3. **Offline bundle** — on a connected machine `uv run poe bundle` (or
    `bundle-linux` / `bundle-windows`) collects wheels + the CloakBrowser binary
-   into `dist/offline/` with an install script for the target machine.
+   into `dist/offline/` with an install script (`install_offline.sh`/`.ps1`)
+   for the target machine.
+4. **Docker fallback** — run the `cloakhq/cloakbrowser` image instead of a
+   locally installed binary.
 
 If external clients (`pi`, `curl`, the SDKs) run behind a proxy, keep local
 traffic direct: `export NO_PROXY=127.0.0.1,localhost`.
 
 ## Docs
 
-`docs/discovery/` documents the reverse-engineering of each backend (the ChatGPT
-web API + anti-bot flow, the Databricks llmproxy channel + model enumeration, the
-Copilot ChatHub protocol), including the process, not just the result.
+- `docs/discovery/` (start at its `README.md` index) documents the
+  reverse-engineering of each backend — the ChatGPT web API + anti-bot flow,
+  the Databricks llmproxy channel + model enumeration, the Copilot ChatHub
+  protocol — including the process, not just the result.
+- `docs/pi/` covers integrating this proxy with the `pi` coding agent: the
+  general `pi` extension/SDK mechanics (`pi-extension-sdk-index.md`) and the
+  retired dedicated `webllm` `pi` package (`webllm-integration.md`).
