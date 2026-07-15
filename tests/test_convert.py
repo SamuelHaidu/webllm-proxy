@@ -197,6 +197,61 @@ def test_user_maps_to_metadata_user_id():
     assert body["metadata"] == {"user_id": "u-42"}
 
 
+def test_adaptive_thinking_for_capable_model():
+    body = convert.openai_to_anthropic(
+        {"messages": [{"role": "user", "content": "x"}]},
+        default_max_tokens=64000,
+        effort="max",
+        model="claude-sonnet-5",
+    )
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body["output_config"] == {"effort": "max"}
+    assert "budget_tokens" not in body["thinking"]
+
+
+def test_adaptive_effort_mapping():
+    for rung, level in [
+        ("min", "low"),
+        ("standard", "medium"),
+        ("extended", "high"),
+        ("max", "max"),
+    ]:
+        body = convert.openai_to_anthropic(
+            {"messages": []}, default_max_tokens=64000, effort=rung, model="claude-opus-4-8"
+        )
+        assert body["output_config"]["effort"] == level
+
+
+def test_adaptive_vs_manual_model_matrix():
+    # both databricks (claude-4-6-sonnet) and Anthropic (claude-sonnet-4-6) naming
+    adaptive = [
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-4-6-sonnet",
+        "claude-opus-4-6",
+        "claude-4-8-opus",
+        "claude-mythos-preview",
+    ]
+    manual = [
+        "claude-4-5-sonnet",
+        "claude-sonnet-4-5",
+        "claude-4-5-haiku",
+        "claude-3-7-sonnet",
+        None,
+        "gpt-4.1",
+    ]
+    for m in adaptive:
+        body = convert.openai_to_anthropic(
+            {"messages": []}, default_max_tokens=64000, effort="max", model=m
+        )
+        assert body["thinking"]["type"] == "adaptive", m
+    for m in manual:
+        body = convert.openai_to_anthropic(
+            {"messages": []}, default_max_tokens=64000, effort="max", model=m
+        )
+        assert body["thinking"]["type"] == "enabled", m
+
+
 def test_anthropic_sse_decode():
     sse = "".join(
         f"event: {t}\ndata: {json.dumps(d)}\n\n"

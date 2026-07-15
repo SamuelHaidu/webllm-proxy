@@ -12,16 +12,23 @@ the OpenAI-SDK smoke suite end to end.
 """
 
 import json
+import re
 
 from .openai import message_text
 
 # reasoning-effort ladder rung -> Anthropic extended-thinking budget (tokens).
 _EFFORT_BUDGET = {"min": 2048, "standard": 8192, "extended": 16384, "max": 32768}
 
+# reasoning-effort ladder rung -> Anthropic adaptive-thinking `effort` level.
+_ADAPTIVE_EFFORT = {"min": "low", "standard": "medium", "extended": "high", "max": "max"}
+
 # Anthropic's hard minimum thinking budget, and the head-room kept for the reply
 # text above the budget when a client's `max_tokens` is too small to fit both.
 _MIN_THINKING_BUDGET = 1024
 _THINKING_REPLY_MARGIN = 512
+
+_FAMILY_RE = re.compile(r"(sonnet|opus|haiku|fable|mythos)")
+_VERSION_RE = re.compile(r"(\d+)(?:[-.](\d+))?")
 
 # Anthropic stop_reason -> OpenAI finish_reason.
 _STOP_MAP = {
@@ -143,15 +150,50 @@ def _apply_sampling(body: dict, req: dict, *, thinking_on: bool) -> None:
         body["top_p"] = req["top_p"]
 
 
+def _supports_adaptive_thinking(model: str | None) -> bool:
+    """True if `model` (a bare slug, in either databricks `claude-4-6-sonnet` or
+    Anthropic `claude-sonnet-4-6` style) is an adaptive-thinking-capable Claude:
+    Sonnet >= 4.6 (incl. Sonnet 5), Opus >= 4.6, and the Fable/Mythos 5 family.
+    Everything else -- notably Claude Sonnet 4.5, the only model enabled on the
+    databricks channel today -- uses manual thinking. Conservative by design: an
+    unrecognized model falls back to manual (the safe default against the
+    channel's unknown-field 400). Extend as new families are enabled."""
+    if not model:
+        return False
+    fam = _FAMILY_RE.search(model.lower())
+    if not fam:
+        return False
+    if fam.group(1) in ("fable", "mythos"):
+        return True
+    if fam.group(1) not in ("sonnet", "opus"):
+        return False  # haiku etc. -> manual
+    ver = _VERSION_RE.search(model.lower())
+    if not ver:
+        return False
+    return (int(ver.group(1)), int(ver.group(2) or 0)) >= (4, 6)
+
+
 def _apply_thinking(body: dict, effort: str | None, model: str | None) -> bool:
     """Set `body["thinking"]` from the effort rung; return whether thinking was
-    enabled. Manual mode (`{type: enabled, budget_tokens}`) is used for models
-    that require it -- e.g. Claude Sonnet 4.5, the only model enabled on the
-    databricks channel -- honoring Anthropic's 1024-token floor and the
-    `max_tokens > budget_tokens` rule (raising `max_tokens` only if a too-small
-    client cap can't otherwise fit the minimum budget)."""
+    enabled.
+
+    Adaptive-capable models (`_supports_adaptive_thinking`) get
+    `{type: adaptive, display: summarized}` + `output_config.effort` -- the
+    model decides how much to think, guided by effort, and manual `budget_tokens`
+    is rejected on them. Everything else -- e.g. Claude Sonnet 4.5, the only
+    model enabled on the databricks channel -- gets manual
+    `{type: enabled, budget_tokens}`, honoring Anthropic's 1024-token floor and
+    the `max_tokens > budget_tokens` rule (raising `max_tokens` only if a
+    too-small client cap can't otherwise fit the minimum budget)."""
     if not effort or effort not in _EFFORT_BUDGET:
         return False
+    if _supports_adaptive_thinking(model):
+        # `display: summarized` because it defaults to `omitted` (empty thinking
+        # text) on the newest models. Adaptive auto-enables interleaved thinking,
+        # so no beta is added for it (see llmproxy.build_llmproxy_envelope).
+        body["thinking"] = {"type": "adaptive", "display": "summarized"}
+        body["output_config"] = {"effort": _ADAPTIVE_EFFORT[effort]}
+        return True
     budget = _EFFORT_BUDGET[effort]
     if budget >= body["max_tokens"]:
         budget = body["max_tokens"] - _THINKING_REPLY_MARGIN
