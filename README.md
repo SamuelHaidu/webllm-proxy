@@ -44,12 +44,29 @@ turn.
 
 ## Install
 
-Requires Python >= 3.10 and [uv](https://docs.astral.sh/uv/).
+Requires Python >= 3.10 and [uv](https://docs.astral.sh/uv/). Pick whichever
+fits:
 
 ```bash
+# From a clone of this repo (development):
 uv sync                     # create .venv, install deps + this package
 uv run webllm-proxy install # pre-download the stealth browser (~200MB; optional)
+
+# As a standalone CLI tool, from PyPI (once published):
+uv tool install webllm-proxy
+
+# As a standalone CLI tool, straight from this Git repo (no PyPI needed):
+uv tool install --from git+https://github.com/<owner>/webllm-proxy webllm-proxy
+
+# Fully offline (no PyPI, no browser download): download the zip for your OS
+# from this repo's GitHub Releases page and see "Corporate / air-gapped
+# install" below.
 ```
+
+`uv tool install` puts a `webllm-proxy` executable on your `PATH` (run `uv
+tool update-shell` once if it isn't already); `webllm-proxy install` still
+needs to be run afterward to fetch the browser binary unless you used the
+offline zip.
 
 ## Configure
 
@@ -196,28 +213,67 @@ docs/discovery/         how each web backend was reverse-engineered
 
 ```bash
 uv run poe check      # fmt + lint (ruff, strict) + typecheck (ty) + test (pytest)
-uv run poe release    # check + build (uv build); publish is separate/manual
+uv run poe release    # check + build (uv build)
+uv run poe publish    # uv publish -- manual fallback; CI does this on every version bump (see below)
 ```
 
 The `openai` / `anthropic` SDKs are dev-only, used purely as validation clients
 in `tests/smoke_openai_sdk.py` to prove SDK compatibility across tools, thinking,
 effort, roles, and streaming — never in the runtime path.
 
+### CI / releasing a new version
+
+Three workflows under `.github/workflows/`:
+
+- **`ci.yml`** — every pull request into `main` runs `uv run poe check`
+  (fmt/lint/typecheck/test). Required to pass before merging.
+- **`release.yml`** — every push to `main` (i.e. every merge) re-runs the
+  quality gate, then checks whether `webllm_proxy/_version.py`'s
+  `__version__` is already tagged. If it's a new version: builds the sdist +
+  wheel, `uv publish`es to PyPI (authenticated via PyPI **Trusted
+  Publishing**/OIDC — no stored token), tags the commit `vX.Y.Z`, and creates
+  the GitHub Release for that tag. A merge that doesn't bump `__version__` is
+  a no-op here — nothing publishes until you do.
+- **`offline-bundle.yml`** — triggered by the `vX.Y.Z` tag `release.yml`
+  just pushed: builds the Linux + Windows offline bundles natively (one
+  runner per OS) and attaches them as zips to that same GitHub Release.
+
+To ship a release: bump `__version__` in `webllm_proxy/_version.py` in a PR,
+merge it, and the rest is automatic.
+
+One-time setup (can't be done from code): register this repo as a [Trusted
+Publisher](https://docs.pypi.org/trusted-publishers/) for the `webllm-proxy`
+project on PyPI, pointing at `release.yml` and the `pypi` environment it
+runs under (Settings → Environments in this repo).
+
 ## Corporate / air-gapped install
 
 CloakBrowser's binary download (~200MB) is the one thing needing internet beyond
 PyPI, and the one most likely blocked by a TLS-inspecting corporate proxy or an
-air-gapped policy. Any one of:
+air-gapped policy.
+
+**Simplest**: every GitHub Release ships a pre-built, fully offline zip for
+Linux and Windows (`webllm-proxy-offline-linux-x64.zip` /
+`-windows-x64.zip`, built by `offline-bundle.yml`) — download it from this
+repo's Releases page, unzip on the target (no-internet) machine, and run
+`install_offline.sh` / `install_offline.ps1` inside it. That installs the
+package (`pip install --no-index --find-links wheels webllm-proxy`) and
+extracts the matching CloakBrowser binary; no PyPI, no browser download,
+nothing else needed.
+
+Otherwise, any one of:
 
 1. **Pre-staged binary** — set `CLOAKBROWSER_BINARY_PATH`; `webllm-proxy install`
    then skips the download.
 2. **Internal mirror** — point `CLOAKBROWSER_DOWNLOAD_URL` at a mirror; also set
    `HTTPS_PROXY`/`HTTP_PROXY` and `REQUESTS_CA_BUNDLE`/`SSL_CERT_FILE` (your root
    CA) if the gateway does TLS inspection.
-3. **Offline bundle** — on a connected machine `uv run poe bundle` (or
-   `bundle-linux` / `bundle-windows`) collects wheels + the CloakBrowser binary
-   into `dist/offline/` with an install script (`install_offline.sh`/`.ps1`)
-   for the target machine.
+3. **Build your own offline bundle** — on a connected machine `uv run poe
+   bundle` (or `bundle-linux` / `bundle-windows`) collects wheels + the
+   CloakBrowser binary into `dist/offline/` with an install script
+   (`install_offline.sh`/`.ps1`) for the target machine — useful if you need
+   a build newer than the last tagged release, or a platform the Release
+   zips don't cover.
 4. **Docker fallback** — run the `cloakhq/cloakbrowser` image instead of a
    locally installed binary.
 
