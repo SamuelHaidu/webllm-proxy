@@ -289,3 +289,4 @@ traffic direct: `export NO_PROXY=127.0.0.1,localhost`.
 - `docs/pi/` covers integrating this proxy with the `pi` coding agent: the
   general `pi` extension/SDK mechanics (`pi-extension-sdk-index.md`) and the
   retired dedicated `webllm` `pi` package (`webllm-integration.md`).
+
