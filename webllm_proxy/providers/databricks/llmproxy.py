@@ -19,6 +19,13 @@ AZURE_CLIENT_ID = "auto-rename-action"
 AZURE_API_VERSION = "2025-01-01-preview"
 CLAUDE_MAX_TOKENS = 64000
 
+# Beta that lets Claude think between tool calls in an agent loop. The real
+# Genie editor client sends it as a body field alongside manual thinking
+# (HAR-confirmed the channel accepts it -- see
+# docs/discovery/2026-07-10-databricks-llmproxy.md). Not needed for adaptive
+# thinking, which auto-enables interleaved thinking.
+INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+
 _DROP_TOOL_FIELDS = {"eager_input_streaming"}
 
 
@@ -62,6 +69,9 @@ def build_llmproxy_envelope(
         body["tools"] = [_normalize_tool(t) for t in tools]
     body.setdefault("max_tokens", 4096)
     body.setdefault("stream", True)
+    thinking = body.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+        body.setdefault("anthropic_beta", [INTERLEAVED_THINKING_BETA])
     body["_llmproxy_fields"] = {
         "model_registration": model,
         "endpoint": ANTHROPIC_ENDPOINT,

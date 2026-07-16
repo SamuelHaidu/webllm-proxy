@@ -12,6 +12,20 @@ cutting utils work, not a backend-specific reverse-engineering finding).
 
 ## Entries
 
+- **[databricks]** `2026-07-15-databricks-anthropic-param-forwarding.md` —
+  spec audit + fix of what the Claude channel's `utils.convert.openai_to_anthropic`
+  forwards. Against Anthropic's current Messages API: dropped `temperature`/
+  `top_p` and de-forced `tool_choice` when thinking is on (both 400 otherwise),
+  added the 1024 `budget_tokens` floor + `max_tokens > budget` rule, and added
+  the missing OpenAI→Anthropic mappings (`max_completion_tokens`, `stop`→
+  `stop_sequences`, `top_p`, `user`→`metadata.user_id`, `parallel_tool_calls`→
+  `disable_parallel_tool_use`, `tool_choice` none/auto). Sends the
+  interleaved-thinking beta with manual thinking (HAR-proven), and adds a
+  dormant model-aware **adaptive thinking** path (`{type:adaptive}`+
+  `output_config.effort`) for Sonnet>=4.6/Opus>=4.6 — but **Sonnet 4.5, the
+  only model enabled on this channel, is manual-only**, so adaptive is
+  unreachable today. Captures the thinking `signature` (full round-trip is
+  impossible over the OpenAI wire). Live-verification still open.
 - **[chatgpt][databricks][copilot]** `2026-07-13-system-prompt-architecture.md` —
   survey of how the final system prompt is assembled, one per provider (not
   unified). chatgpt/copilot have no native system role/tool-calling, so both
