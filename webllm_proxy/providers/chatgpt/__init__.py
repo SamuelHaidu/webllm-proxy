@@ -51,7 +51,7 @@ def authed(page) -> bool:
 
 
 def build_session(
-    headless: bool, profile_dir: Path, extension_paths: list[str] | None = None
+    headless: bool, profile_dir: Path, extension_paths: list[str] | None = None, **browser_opts
 ) -> BrowserSession:
     return BrowserSession(
         name=NAME,
@@ -61,6 +61,7 @@ def build_session(
         authed=authed,
         fetch_patterns=[{"urlPattern": "*/backend-api/f/conversation*", "requestStage": "Request"}],
         extension_paths=extension_paths,
+        **browser_opts,
     )
 
 

@@ -13,16 +13,28 @@ from .base import BrowserBackedProvider
 PROVIDERS = ("chatgpt", "databricks", "copilot")
 
 
+def _browser_kwargs(pc) -> dict:
+    """Which browser drives this provider (stealth CloakBrowser vs installed
+    Edge/Chrome on its real profile) -- forwarded to the session and login."""
+    return {
+        "browser": pc.browser,
+        "browser_profile": pc.browser_profile,
+        "browser_user_data_dir": pc.browser_user_data_dir,
+    }
+
+
 def build_provider(name: str, config: Config) -> BrowserBackedProvider:
     pc = getattr(config.providers, name)
     profile = config.profile_dir(name)
     # Load only extensions already copied into our own data dir; this never reads
     # the installed Chrome profile (that happens in `login` / `import-extensions`).
+    # Ignored when `browser` != stealth (the real Edge/Chrome loads its own).
     ext = imported_extension_paths(pc, name)
+    bk = _browser_kwargs(pc)
     if name == "chatgpt":
         from . import chatgpt
 
-        session = chatgpt.build_session(pc.headless, profile, extension_paths=ext)
+        session = chatgpt.build_session(pc.headless, profile, extension_paths=ext, **bk)
         return chatgpt.ChatgptProvider(
             session, system_prompt=pc.system_prompt_for, user_suffix=pc.user_suffix_for
         )
@@ -30,7 +42,7 @@ def build_provider(name: str, config: Config) -> BrowserBackedProvider:
         from . import databricks
 
         session = databricks.build_session(
-            pc.headless, profile, pc.workspace_url, extension_paths=ext
+            pc.headless, profile, pc.workspace_url, extension_paths=ext, **bk
         )
         return databricks.DatabricksProvider(
             session,
@@ -43,7 +55,7 @@ def build_provider(name: str, config: Config) -> BrowserBackedProvider:
         from . import copilot
 
         nav_url = pc.url or copilot.NAV_URL
-        session = copilot.build_session(pc.headless, profile, nav_url, extension_paths=ext)
+        session = copilot.build_session(pc.headless, profile, nav_url, extension_paths=ext, **bk)
         return copilot.CopilotProvider(
             session,
             nav_url=nav_url,
@@ -68,11 +80,16 @@ def login(name: str, config: Config) -> bool:
     imported = import_extensions(pc, name)
     if imported:
         print(f"[{name}] imported {len(imported)} Chrome extension(s) into the proxy profile")
+    bk = _browser_kwargs(pc)
     if name == "chatgpt":
         from . import chatgpt
 
         return run_login(
-            name=name, nav_url=chatgpt.CHATGPT_URL + "/", profile_dir=profile, authed=chatgpt.authed
+            name=name,
+            nav_url=chatgpt.CHATGPT_URL + "/",
+            profile_dir=profile,
+            authed=chatgpt.authed,
+            **bk,
         )
     if name == "databricks":
         from . import databricks
@@ -80,7 +97,7 @@ def login(name: str, config: Config) -> bool:
         if not pc.workspace_url:
             raise RuntimeError("databricks workspace_url is not set (workspace URL with ?o=).")
         return run_login(
-            name=name, nav_url=pc.workspace_url, profile_dir=profile, authed=databricks.authed
+            name=name, nav_url=pc.workspace_url, profile_dir=profile, authed=databricks.authed, **bk
         )
     if name == "copilot":
         from . import copilot
@@ -91,5 +108,6 @@ def login(name: str, config: Config) -> bool:
             profile_dir=profile,
             authed=copilot.authed,
             steer=copilot.login_steer,
+            **bk,
         )
     raise ValueError(f"unknown provider {name!r}")

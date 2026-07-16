@@ -95,6 +95,7 @@ def build_session(
     profile_dir: Path,
     nav_url: str = NAV_URL,
     extension_paths: list[str] | None = None,
+    **browser_opts,
 ) -> BrowserSession:
     return BrowserSession(
         name=NAME,
@@ -103,6 +104,7 @@ def build_session(
         headless=headless,
         authed=authed,
         extension_paths=extension_paths,
+        **browser_opts,
     )
 
 
