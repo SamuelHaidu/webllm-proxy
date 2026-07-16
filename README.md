@@ -152,7 +152,10 @@ optional except where noted:
 | `enabled` | `false` | must be `true` for the provider to boot at `serve`/`login` |
 | `headless` | `true` | used by `serve`; `login` always runs headed regardless |
 | `profile_dir` | per-OS data dir | override where the persistent browser profile lives |
-| `import_chrome_extensions` | `false` | load your installed Chrome's extensions into this profile (see below) |
+| `browser` | `stealth` | `stealth` (bundled CloakBrowser) or `edge`/`chrome` = drive your installed browser on its real profile (see below) |
+| `browser_profile` | `Default` | which installed-browser profile to open (when `browser` is `edge`/`chrome`) |
+| `browser_user_data_dir` | auto-detect | override the installed browser's "User Data" dir |
+| `import_chrome_extensions` | `false` | load your installed Chrome's extensions into the stealth profile (see below) |
 | `chrome_profile` | `Default` | which installed-Chrome profile to import extensions from |
 | `chrome_user_data_dir` | auto-detect | override the Chrome "User Data" dir to import from |
 | `tokenizer` | `openai/gpt-5` | BPE profile used to *estimate* `usage` (see below) |
@@ -169,6 +172,36 @@ optional except where noted:
 A few debug env vars remain: `WEBLLM_PROXY_DUMP_SSE=<path>` (dump raw captured
 SSE to a file), `WEBLLM_PROXY_DUMP_DIR=<dir>` (where redacted
 `*_last_request.json` dumps land, defaults to the OS temp dir).
+
+### Driving your installed Edge/Chrome directly
+
+If you want a provider to run in **your actual browser** — with every extension
+and login already working — set `browser: edge` (or `browser: chrome`) instead of
+using the extension import above:
+
+```yaml
+providers:
+  databricks:
+    browser: edge
+    browser_profile: "Default"        # or "Profile 1"; from edge://version -> Profile Path
+    # browser_user_data_dir: null     # auto: %LOCALAPPDATA%\Microsoft\Edge\User Data
+```
+
+The proxy then launches *your* Edge/Chrome on *your* profile (via Playwright's
+browser channel), so nothing is copied and nothing starts logged-out. Three
+caveats:
+
+1. **Fully close that browser first** — a profile can only be open in one
+   instance. Point `browser_profile` at a dedicated profile if you want to keep
+   using your daily one alongside the proxy.
+2. **Not for `chatgpt`** — this turns off the anti-detect stealth engine, so
+   ChatGPT's Turnstile/PoW would fail. Ideal for `databricks`/`copilot`; keep
+   chatgpt on `browser: stealth`.
+3. It uses your real logins (that's the point) and writes to that profile
+   (history, etc.) — this is normal `msedge.exe`/`chrome.exe` behavior.
+
+This supersedes the extension-import feature for that provider (no
+`import-extensions` step needed).
 
 ### Importing your installed Chrome's extensions
 

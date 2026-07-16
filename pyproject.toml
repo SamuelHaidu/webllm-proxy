@@ -86,9 +86,13 @@ max-args = 6
 "webllm_proxy/utils/convert.py" = ["C901", "PLR0911"]
 "webllm_proxy/server.py" = ["C901", "PLR0912"]
 # The browser session constructor threads a handful of per-launch options
-# (profile, headless, auth check, fetch patterns, extension paths) -- all
-# keyword-only and legitimately needed; splitting it would only add indirection.
+# (profile, headless, auth check, fetch patterns, extension paths, browser
+# selection) -- all keyword-only and legitimately needed; splitting it would only
+# add indirection.
 "webllm_proxy/gateways/cloakbrowser/session.py" = ["PLR0913"]
+# Playwright is imported lazily inside launch_system_context so the heavy import
+# only happens when a provider actually drives a system browser (Edge/Chrome).
+"webllm_proxy/utils/system_browser.py" = ["PLC0415"]
 # research.py lazily imports its own package `__init__` (`_trigger`) to avoid a
 # real import cycle -- intentional, like the other lazy provider imports.
 "webllm_proxy/providers/chatgpt/research.py" = ["PLC0415"]

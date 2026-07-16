@@ -109,6 +109,7 @@ def build_session(
     profile_dir: Path,
     workspace_url: str,
     extension_paths: list[str] | None = None,
+    **browser_opts,
 ) -> BrowserSession:
     if not workspace_url:
         raise RuntimeError("databricks workspace_url is not set (workspace URL with ?o=).")
@@ -119,6 +120,7 @@ def build_session(
         headless=headless,
         authed=authed,
         extension_paths=extension_paths,
+        **browser_opts,
     )
 
 

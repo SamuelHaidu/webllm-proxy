@@ -64,6 +64,26 @@ providers:
     assert ch.chrome_user_data_dir == "/some/User Data"
 
 
+def test_browser_fields_default_and_validate(tmp_path):
+    cfg = Config()
+    assert cfg.providers.databricks.browser == "stealth"
+    assert cfg.providers.databricks.browser_profile == "Default"
+    assert cfg.providers.databricks.browser_user_data_dir is None
+
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "providers:\n  databricks:\n    browser: edge\n    browser_profile: 'Profile 1'\n",
+        encoding="utf-8",
+    )
+    db = load_config(p).providers.databricks
+    assert db.browser == "edge"
+    assert db.browser_profile == "Profile 1"
+
+    p.write_text("providers:\n  databricks:\n    browser: firefox\n", encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_config(p)
+
+
 def test_profile_dir_override(tmp_path):
     # Compare Path == Path (both go through the same OS-native separator
     # normalization), not Path == a hardcoded POSIX-style string -- the
