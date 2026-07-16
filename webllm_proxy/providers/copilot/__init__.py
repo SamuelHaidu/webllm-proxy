@@ -90,13 +90,19 @@ def login_steer(page) -> None:
             page.goto(NAV_URL, wait_until="domcontentloaded", timeout=60000)
 
 
-def build_session(headless: bool, profile_dir: Path, nav_url: str = NAV_URL) -> BrowserSession:
+def build_session(
+    headless: bool,
+    profile_dir: Path,
+    nav_url: str = NAV_URL,
+    extension_paths: list[str] | None = None,
+) -> BrowserSession:
     return BrowserSession(
         name=NAME,
         nav_url=nav_url,
         profile_dir=profile_dir,
         headless=headless,
         authed=authed,
+        extension_paths=extension_paths,
     )
 
 

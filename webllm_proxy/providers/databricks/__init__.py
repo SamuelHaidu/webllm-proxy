@@ -104,7 +104,12 @@ def authed(page) -> bool:
         return False
 
 
-def build_session(headless: bool, profile_dir: Path, workspace_url: str) -> BrowserSession:
+def build_session(
+    headless: bool,
+    profile_dir: Path,
+    workspace_url: str,
+    extension_paths: list[str] | None = None,
+) -> BrowserSession:
     if not workspace_url:
         raise RuntimeError("databricks workspace_url is not set (workspace URL with ?o=).")
     return BrowserSession(
@@ -113,6 +118,7 @@ def build_session(headless: bool, profile_dir: Path, workspace_url: str) -> Brow
         profile_dir=profile_dir,
         headless=headless,
         authed=authed,
+        extension_paths=extension_paths,
     )
 
 

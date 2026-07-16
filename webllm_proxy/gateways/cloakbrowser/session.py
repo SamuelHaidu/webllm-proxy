@@ -97,6 +97,7 @@ class BrowserSession:
         headless: bool,
         authed: Callable[[Any], bool],
         fetch_patterns: list[dict] | None = None,
+        extension_paths: list[str] | None = None,
     ):
         self.name = name
         self.nav_url = nav_url
@@ -104,6 +105,7 @@ class BrowserSession:
         self.headless = headless
         self._authed = authed
         self._fetch_patterns = fetch_patterns or []
+        self._extension_paths = extension_paths or None
         self._tasks: queue.Queue = queue.Queue()
         self.ready = False
         self.error: str | None = None
@@ -175,7 +177,11 @@ class BrowserSession:
             self.headless,
             self.profile_dir,
         )
-        self._ctx = launch_persistent_context(str(self.profile_dir), headless=self.headless)
+        self._ctx = launch_persistent_context(
+            str(self.profile_dir),
+            headless=self.headless,
+            extension_paths=self._extension_paths,
+        )
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         self._client = self._ctx.new_cdp_session(self._page)
         self._client.send("Network.enable")
