@@ -47,6 +47,14 @@ providers:
   databricks:
     enabled: true
     headless: true
+    # Drive this provider with your *installed* Edge/Chrome on its real profile
+    # instead of the bundled stealth browser -- so all your extensions and logins
+    # already work, no copying. Fully close that browser first (a profile opens in
+    # one instance only), and don't use this for chatgpt (it needs stealth for the
+    # anti-bot check). Great for databricks/copilot.
+    # browser: edge                 # stealth (default) | edge | chrome
+    # browser_profile: "Default"    # which installed-browser profile to open
+    # browser_user_data_dir: null   # override auto-detect (Win Edge: %LOCALAPPDATA%\Microsoft\Edge\User Data)
     # Required when enabled: the workspace URL including its ?o=<org-id> query.
     workspace_url: "https://<your-workspace>.cloud.databricks.com/?o=<org-id>"
     # Models are auto-discovered live from graphql/ConversationModelStatuses
