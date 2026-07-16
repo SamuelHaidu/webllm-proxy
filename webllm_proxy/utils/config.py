@@ -97,11 +97,32 @@ class ProviderConfigBase(BaseModel):
     # `%LOCALAPPDATA%\Google\Chrome\User Data`). `None` auto-detects. Only used
     # when `import_chrome_extensions` is true.
     chrome_user_data_dir: str | None = None
+    # Which browser drives this provider. "stealth" (default) = the bundled
+    # anti-detect CloakBrowser (its own isolated profile). "edge"/"chrome" =
+    # your *installed* Edge/Chrome opening its *real* profile directly, so every
+    # extension and login already works with no copying. Trade-offs: no stealth
+    # (use for databricks/copilot, NOT chatgpt's anti-bot) and the browser must
+    # be fully closed first. See `utils/system_browser.py`.
+    browser: str = "stealth"
+    # Which profile of the installed browser to open (e.g. "Default",
+    # "Profile 1"). Only used when `browser` is "edge"/"chrome".
+    browser_profile: str = "Default"
+    # Override the installed browser's "User Data" dir (Windows Edge:
+    # `%LOCALAPPDATA%\Microsoft\Edge\User Data`). `None` auto-detects. Only used
+    # when `browser` is "edge"/"chrome".
+    browser_user_data_dir: str | None = None
 
     @field_validator("tokenizer")
     @classmethod
     def _known_tokenizer(cls, v: str) -> str:
         return _check_tokenizer(v)
+
+    @field_validator("browser")
+    @classmethod
+    def _known_browser(cls, v: str) -> str:
+        if v not in ("stealth", "edge", "chrome"):
+            raise ValueError(f"unknown browser {v!r}; choose one of: stealth, edge, chrome")
+        return v
 
     def system_prompt_for(self, slug: str | None) -> str | None:
         """Resolve which named prompt (if any) to send for `slug`: the
