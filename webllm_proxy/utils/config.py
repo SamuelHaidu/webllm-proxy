@@ -83,6 +83,20 @@ class ProviderConfigBase(BaseModel):
     # many turns. `None` (the default) appends nothing. Per-model override:
     # `models.<slug>.user_suffix`.
     user_suffix: str | None = None
+    # Load the user's *installed* Chrome extensions into this provider's stealth
+    # browser profile. Opt-in and conservative: only the public `Extensions/`
+    # folder of the chosen Chrome profile is ever read (never cookies, saved
+    # passwords, or `Local State`). The read+copy happens on an explicit step
+    # (`webllm-proxy login` / `webllm-proxy import-extensions`); the server only
+    # loads what was already copied. See `utils/chrome_import.py`.
+    import_chrome_extensions: bool = False
+    # Which installed-Chrome profile to import extensions from (e.g. "Default",
+    # "Profile 1"). Only used when `import_chrome_extensions` is true.
+    chrome_profile: str = "Default"
+    # Override the auto-detected Chrome "User Data" dir (Windows:
+    # `%LOCALAPPDATA%\Google\Chrome\User Data`). `None` auto-detects. Only used
+    # when `import_chrome_extensions` is true.
+    chrome_user_data_dir: str | None = None
 
     @field_validator("tokenizer")
     @classmethod

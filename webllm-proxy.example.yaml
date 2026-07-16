@@ -15,6 +15,15 @@ providers:
     enabled: true
     headless: true
     # profile_dir: /custom/path   # optional; defaults to the per-OS data dir
+    # Load your *installed* Chrome's extensions into this provider's stealth
+    # browser. Opt-in and conservative: only the public Extensions/ folder is
+    # read -- never cookies, saved passwords, or Local State. Run
+    # `webllm-proxy login --provider chatgpt` (or `webllm-proxy import-extensions
+    # --provider chatgpt`) once to copy them in; the server then loads whatever
+    # was copied. Available on every provider below.
+    # import_chrome_extensions: false
+    # chrome_profile: Default        # which installed-Chrome profile to read from
+    # chrome_user_data_dir: null     # override auto-detect (Win: %LOCALAPPDATA%\Google\Chrome\User Data)
     # `usage.prompt_tokens`/`completion_tokens` are estimated (chatgpt has no
     # real token-count API), via one of the vendored BPE-vocab + chat-overhead
     # profiles in webllm_proxy/utils/tokens_data/model_profiles.json. Provider

@@ -39,6 +39,31 @@ def test_defaults_when_empty(tmp_path):
     assert cfg.enabled_providers() == []
 
 
+def test_chrome_extension_fields_default_and_parse(tmp_path):
+    cfg = Config()
+    assert cfg.providers.chatgpt.import_chrome_extensions is False
+    assert cfg.providers.chatgpt.chrome_profile == "Default"
+    assert cfg.providers.chatgpt.chrome_user_data_dir is None
+
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        """
+providers:
+  chatgpt:
+    enabled: true
+    import_chrome_extensions: true
+    chrome_profile: "Profile 1"
+    chrome_user_data_dir: "/some/User Data"
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(p)
+    ch = cfg.providers.chatgpt
+    assert ch.import_chrome_extensions is True
+    assert ch.chrome_profile == "Profile 1"
+    assert ch.chrome_user_data_dir == "/some/User Data"
+
+
 def test_profile_dir_override(tmp_path):
     # Compare Path == Path (both go through the same OS-native separator
     # normalization), not Path == a hardcoded POSIX-style string -- the

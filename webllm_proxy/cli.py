@@ -75,6 +75,35 @@ def _login(name: str, config_file: str) -> int:
         return 2
 
 
+def _import_extensions(name: str, config_file: str) -> int:
+    from .utils.chrome_import import import_extensions
+    from .utils.config import Config, load_config
+
+    try:
+        config = load_config(config_file)
+    except FileNotFoundError:
+        config = Config()
+    except Exception as e:
+        print(f"FATAL: {e}", file=sys.stderr)
+        return 2
+
+    pc = getattr(config.providers, name)
+    if not pc.import_chrome_extensions:
+        print(
+            f"[{name}] import_chrome_extensions is not enabled; "
+            f"set providers.{name}.import_chrome_extensions: true in {config_file} first."
+        )
+        return 0
+    paths = import_extensions(pc, name)
+    if not paths:
+        print(f"[{name}] no extensions imported (no installed-Chrome profile/extensions found).")
+        return 0
+    print(f"[{name}] imported {len(paths)} extension(s) into the proxy profile:")
+    for p in paths:
+        print(f"  {p}")
+    return 0
+
+
 def _install() -> int:
     from cloakbrowser import ensure_binary
 
@@ -106,12 +135,22 @@ def main(argv=None) -> int:
     sp_login.add_argument("--provider", choices=PROVIDERS, required=True)
     sp_login.add_argument("--config-file", default=DEFAULT_CONFIG)
 
+    sp_imp = sub.add_parser(
+        "import-extensions",
+        help="copy the installed Chrome's extensions into a provider profile "
+        "(needs import_chrome_extensions: true)",
+    )
+    sp_imp.add_argument("--provider", choices=PROVIDERS, required=True)
+    sp_imp.add_argument("--config-file", default=DEFAULT_CONFIG)
+
     sub.add_parser("install", help="pre-download the stealth browser binary")
 
     args = p.parse_args(argv)
     cmd = args.cmd or "serve"
     if cmd == "login":
         return _login(args.provider, args.config_file)
+    if cmd == "import-extensions":
+        return _import_extensions(args.provider, args.config_file)
     if cmd == "install":
         return _install()
     return _serve(getattr(args, "config_file", DEFAULT_CONFIG))

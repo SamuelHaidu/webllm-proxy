@@ -50,7 +50,9 @@ def authed(page) -> bool:
         return False
 
 
-def build_session(headless: bool, profile_dir: Path) -> BrowserSession:
+def build_session(
+    headless: bool, profile_dir: Path, extension_paths: list[str] | None = None
+) -> BrowserSession:
     return BrowserSession(
         name=NAME,
         nav_url=CHATGPT_URL + "/",
@@ -58,6 +60,7 @@ def build_session(headless: bool, profile_dir: Path) -> BrowserSession:
         headless=headless,
         authed=authed,
         fetch_patterns=[{"urlPattern": "*/backend-api/f/conversation*", "requestStage": "Request"}],
+        extension_paths=extension_paths,
     )
 
 
