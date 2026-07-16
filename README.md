@@ -152,6 +152,9 @@ optional except where noted:
 | `enabled` | `false` | must be `true` for the provider to boot at `serve`/`login` |
 | `headless` | `true` | used by `serve`; `login` always runs headed regardless |
 | `profile_dir` | per-OS data dir | override where the persistent browser profile lives |
+| `import_chrome_extensions` | `false` | load your installed Chrome's extensions into this profile (see below) |
+| `chrome_profile` | `Default` | which installed-Chrome profile to import extensions from |
+| `chrome_user_data_dir` | auto-detect | override the Chrome "User Data" dir to import from |
 | `tokenizer` | `openai/gpt-5` | BPE profile used to *estimate* `usage` (see below) |
 | `models.<slug>.tokenizer` | — | per-model tokenizer override, e.g. for a mini/nano tier |
 | `system_prompt` | none | name of a `prompts/system_prompts/<name>.md` file to send |
@@ -166,6 +169,35 @@ optional except where noted:
 A few debug env vars remain: `WEBLLM_PROXY_DUMP_SSE=<path>` (dump raw captured
 SSE to a file), `WEBLLM_PROXY_DUMP_DIR=<dir>` (where redacted
 `*_last_request.json` dumps land, defaults to the OS temp dir).
+
+### Importing your installed Chrome's extensions
+
+Set `import_chrome_extensions: true` on a provider to run the stealth browser
+with the extensions from your everyday Chrome (ad blockers, helpers, etc.). It is
+**opt-in and deliberately conservative**: only the public `Extensions/` folder of
+the chosen `chrome_profile` is ever read — never cookies, saved passwords, or
+`Local State`. The extensions are **copied into the proxy's own profile**, so your
+real Chrome can stay open and is never modified.
+
+The read+copy happens on an explicit, user-run step, not silently at serve time:
+
+```bash
+uv run webllm-proxy import-extensions --provider chatgpt   # copy them in now
+# ...or just `login`, which imports them too:
+uv run webllm-proxy login --provider chatgpt
+```
+
+`serve` then loads whatever was copied (it never touches your real Chrome dir).
+Chrome's "User Data" dir is auto-detected (Windows:
+`%LOCALAPPDATA%\Google\Chrome\User Data`; macOS/Linux equivalents, incl. Flatpak);
+override it with `chrome_user_data_dir`. Extensions load under headless too, though
+UI-heavy ones may not fully function without a display.
+
+**If your antivirus/EDR flags the app:** the flag will target CloakBrowser's
+patched, unsigned `chrome.exe` (under `~/.cloakbrowser`, or `CLOAKBROWSER_CACHE_DIR`)
+or generic browser-automation behavior — not this import, which never reads
+credential files. On a personal machine you can add an exclusion for that binary in
+your AV/EDR. This project does not attempt to hide from or evade security tooling.
 
 ## Design & known limitations
 
