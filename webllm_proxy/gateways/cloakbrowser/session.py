@@ -27,6 +27,7 @@ from cloakbrowser import launch_persistent_context
 
 from ...utils.env import env_str
 from ...utils.process import clean_singleton_locks, kill_profile_chrome
+from ...utils.system_browser import launch_system_context
 
 log = logging.getLogger(__name__)
 
@@ -53,16 +54,33 @@ def run_login(
     authed: Callable[[Any], bool],
     steer: Callable[[Any], None] | None = None,
     timeout_s: int = 600,
+    browser: str = "stealth",
+    browser_profile: str = "Default",
+    browser_user_data_dir: str | None = None,
 ) -> bool:
     """Open a headed browser for a one-time login into the provider's profile.
+
+    With `browser` "edge"/"chrome" this opens the user's *installed* browser on
+    its real profile (usually already logged in); otherwise the stealth
+    CloakBrowser on the provider's isolated profile.
 
     `steer`, if given, runs once per poll after a failed `authed()` check: a
     provider can use it to nudge the browser back toward its app surface when a
     login lands on an off-app page (see copilot.login_steer)."""
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    clean_singleton_locks(profile_dir)
-    print(f"[{name}] opening a browser window for login (profile: {profile_dir}) ...")
-    ctx = launch_persistent_context(str(profile_dir), headless=False)
+    pw = None
+    if browser != "stealth":
+        print(f"[{name}] opening your {browser} for login (profile: {browser_profile}) ...")
+        pw, ctx, _ = launch_system_context(
+            browser=browser,
+            profile=browser_profile,
+            user_data_dir=browser_user_data_dir,
+            headless=False,
+        )
+    else:
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        clean_singleton_locks(profile_dir)
+        print(f"[{name}] opening a browser window for login (profile: {profile_dir}) ...")
+        ctx = launch_persistent_context(str(profile_dir), headless=False)
     try:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(nav_url, wait_until="domcontentloaded", timeout=60000)
@@ -72,7 +90,7 @@ def run_login(
             time.sleep(4)
             try:
                 if authed(page):
-                    print(f"[{name}] logged in. Session saved to {profile_dir}.")
+                    print(f"[{name}] logged in.")
                     return True
             except Exception:
                 pass
@@ -83,8 +101,13 @@ def run_login(
         print("Timed out waiting for login.")
         return False
     finally:
-        ctx.close()
-        kill_profile_chrome(str(profile_dir))
+        with contextlib.suppress(Exception):
+            ctx.close()
+        if pw is not None:
+            with contextlib.suppress(Exception):
+                pw.stop()
+        else:
+            kill_profile_chrome(str(profile_dir))
 
 
 class BrowserSession:
@@ -98,6 +121,9 @@ class BrowserSession:
         authed: Callable[[Any], bool],
         fetch_patterns: list[dict] | None = None,
         extension_paths: list[str] | None = None,
+        browser: str = "stealth",
+        browser_profile: str = "Default",
+        browser_user_data_dir: str | None = None,
     ):
         self.name = name
         self.nav_url = nav_url
@@ -106,10 +132,14 @@ class BrowserSession:
         self._authed = authed
         self._fetch_patterns = fetch_patterns or []
         self._extension_paths = extension_paths or None
+        self._browser = browser
+        self._browser_profile = browser_profile
+        self._browser_user_data_dir = browser_user_data_dir
         self._tasks: queue.Queue = queue.Queue()
         self.ready = False
         self.error: str | None = None
         self._ctx: Any = None
+        self._pw: Any = None  # Playwright handle when driving a system browser
         self._page: Any = None
         self._client: Any = None
         self._active: _Turn | None = None
@@ -168,7 +198,18 @@ class BrowserSession:
                 if not self._closing:
                     self._try_reboot()
 
-    def _boot(self):
+    def _launch_context(self):
+        """Create the browser context: the bundled stealth CloakBrowser, or the
+        user's installed Edge/Chrome on its real profile (`browser` != stealth)."""
+        if self._browser != "stealth":
+            self._pw, ctx, udd = launch_system_context(
+                browser=self._browser,
+                profile=self._browser_profile,
+                user_data_dir=self._browser_user_data_dir,
+                headless=self.headless,
+            )
+            log.info("[%s] driving system %s profile=%s", self.name, self._browser, udd)
+            return ctx
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         clean_singleton_locks(self.profile_dir)
         log.info(
@@ -177,11 +218,14 @@ class BrowserSession:
             self.headless,
             self.profile_dir,
         )
-        self._ctx = launch_persistent_context(
+        return launch_persistent_context(
             str(self.profile_dir),
             headless=self.headless,
             extension_paths=self._extension_paths,
         )
+
+    def _boot(self):
+        self._ctx = self._launch_context()
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         self._client = self._ctx.new_cdp_session(self._page)
         self._client.send("Network.enable")
@@ -205,17 +249,27 @@ class BrowserSession:
         self.ready = True
         log.info("[%s] session ready (authenticated)", self.name)
 
+    def _stop_pw(self):
+        """Stop the Playwright handle when driving a system browser (no-op for
+        the stealth path, which manages its own Playwright internally)."""
+        if self._pw is not None:
+            with contextlib.suppress(Exception):
+                self._pw.stop()
+            self._pw = None
+
     def _shutdown_browser(self):
         self.ready = False
         with contextlib.suppress(Exception):
             if self._ctx is not None:
                 self._ctx.close()
+        self._stop_pw()
 
     def _try_reboot(self):
         log.warning("[%s] rebooting browser after failure", self.name)
         self.ready = False
         with contextlib.suppress(Exception):
             self._ctx.close()
+        self._stop_pw()
         kill_profile_chrome(str(self.profile_dir))
         try:
             self._boot()
